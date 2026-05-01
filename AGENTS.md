@@ -64,3 +64,16 @@ go test -race ./...
 
 Prefer targeted core/application tests over heavy adapter integration tests when
 the same behavior can be verified without framework setup.
+
+## Local agent workflow notes
+
+- PRs, pushes, and commits for this checkout target `cjmustard/we` by default.
+  Verify the target before opening a PR, for example:
+
+  ```sh
+  gh repo view cjmustard/we --json nameWithOwner,defaultBranchRef
+  ```
+
+- `AGENTS.md` and `plan.md` are local-only guidance files in this checkout.
+  Never stage, commit, push, or include them in pull requests unless the user
+  explicitly overrides this rule in the same request.
