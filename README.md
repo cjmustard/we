@@ -24,6 +24,24 @@ Keep new features in that shape: add reusable block mutation logic to `edit`,
 coordinate user-facing operations through `service`, store player state through
 `session`, and keep Dragonfly command/form code thin.
 
+## Configuration
+
+`we.NewHandler` accepts optional Go configuration. Defaults preserve existing
+behavior: 40 history entries per stack, a filesystem schematic store rooted at
+`.we-schematics`, and a 128-block brush raycast distance. Guardrail fields
+default to `0`, which means unlimited and is reserved for opt-in safety limits.
+
+```go
+p.Handle(we.NewHandler(p,
+	we.WithHistoryLimit(100),
+	we.WithSchematicDirectory("schematics"),
+	we.WithBrushMaxDistance(96),
+))
+```
+
+Servers that need non-filesystem schematic persistence can provide a custom
+`edit.SchematicStore` with `we.WithSchematicStore(...)`.
+
 ## Selection
 
 Most edits need two corners of an axis-aligned box.
@@ -98,7 +116,8 @@ Use commas for multiple block types in the first argument (e.g. `stone,dirt`).
 
 ### Schematics
 
-Saved files are handled by the library’s schematic storage (see `edit` package).
+Saved files are handled by the configured `edit.SchematicStore`; the default
+implementation writes JSON files under `.we-schematics`.
 
 | Subcommand | Syntax | Description |
 |------------|--------|-------------|

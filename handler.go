@@ -26,13 +26,16 @@ type Handler struct {
 	p              *player.Player
 	ph             *palette.Handler
 	selectionTrace visual.Wireframe
+
+  cfg Config
 }
 
 // NewHandler returns a player handler. WorldEdit commands register when the
 // cmd package is imported (blank import keeps registration tied to using we).
-func NewHandler(p *player.Player) *Handler {
-	session.Ensure(p)
-	return &Handler{p: p, ph: palette.NewHandler(p)}
+func NewHandler(p *player.Player, opts ...Option) *Handler {
+	cfg := newConfig(opts)
+	session.EnsureWithSettings(p, cfg.HistoryLimit, cfg.SchematicStore)
+	return &Handler{p: p, ph: palette.NewHandler(p), cfg: cfg}
 }
 
 // HandleItemUse implements item use (brush raycast when bound).
@@ -108,7 +111,7 @@ func (h *Handler) heldBrush() (editbrush.BrushConfig, bool) {
 
 func (h *Handler) applyBrush(tx *world.Tx, target cube.Pos, cfg editbrush.BrushConfig) {
 	batch := history.NewBatch(true)
-	if err := editbrush.ApplyBrush(tx, h.p, target, cfg, batch); err != nil {
+	if err := editbrush.ApplyBrushWithStore(tx, h.p, target, cfg, h.cfg.SchematicStore, batch); err != nil {
 		h.p.Message(err.Error())
 		return
 	}
@@ -118,9 +121,8 @@ func (h *Handler) applyBrush(tx *world.Tx, target cube.Pos, cfg editbrush.BrushC
 var brushTraceBox = cube.Box(-0.125, -0.125, -0.125, 0.125, 0.125, 0.125)
 
 func (h *Handler) brushTarget(tx *world.Tx) cube.Pos {
-	const maxDistance = 128
 	start := h.p.Position().Add(mgl64.Vec3{0, h.p.EyeHeight()})
-	end := start.Add(h.p.Rotation().Vec3().Mul(maxDistance))
+	end := start.Add(h.p.Rotation().Vec3().Mul(h.cfg.BrushMaxDistance))
 	filter := func(seq iter.Seq[world.Entity]) iter.Seq[world.Entity] {
 		return func(yield func(world.Entity) bool) {
 			for e := range seq {
