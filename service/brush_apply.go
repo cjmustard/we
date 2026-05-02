@@ -73,6 +73,34 @@ func ApplyBrush(tx *world.Tx, actor BrushActor, target cube.Pos, cfg BrushConfig
 	return nil
 }
 
+// BrushAnchorFromSurface returns the brush anchor for a clicked surface block.
+// Shape-volume brushes are moved so their nearest edge starts at surface and
+// the generated volume extends out through face instead of being centred inside
+// the clicked block/player. Non-volume brushes use surface directly.
+func BrushAnchorFromSurface(surface cube.Pos, face cube.Face, cfg BrushConfig) cube.Pos {
+	if !brushTypeUsesShapeVolume(strings.ToLower(cfg.Type)) {
+		return surface
+	}
+	spec := cfg.shapeSpec()
+	bounds := spec.Bounds(cube.Pos{})
+	anchor := surface
+	switch face {
+	case cube.FaceUp:
+		anchor[1] -= bounds.Min[1]
+	case cube.FaceDown:
+		anchor[1] -= bounds.Max[1]
+	case cube.FaceEast:
+		anchor[0] -= bounds.Min[0]
+	case cube.FaceWest:
+		anchor[0] -= bounds.Max[0]
+	case cube.FaceSouth:
+		anchor[2] -= bounds.Min[2]
+	case cube.FaceNorth:
+		anchor[2] -= bounds.Max[2]
+	}
+	return anchor
+}
+
 func applyBrushShape(tx *world.Tx, target cube.Pos, cfg BrushConfig, f func(pos cube.Pos)) {
 	spec := cfg.shapeSpec()
 	area := spec.Bounds(target)

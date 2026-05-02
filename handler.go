@@ -3,6 +3,7 @@ package we
 import (
 	"image/color"
 	"iter"
+	"math"
 
 	"github.com/df-mc/dragonfly/server/block/cube"
 	"github.com/df-mc/dragonfly/server/block/cube/trace"
@@ -40,13 +41,13 @@ func NewHandler(p *player.Player, opts ...Option) *Handler {
 func (h *Handler) HandleItemUse(ctx *player.Context) {
 	if cfg, ok := h.heldBrush(); ok {
 		ctx.Cancel()
-		h.applyBrush(ctx.Val().Tx(), h.brushTarget(ctx.Val().Tx()), cfg)
+		h.applyBrush(ctx.Val().Tx(), h.brushTarget(ctx.Val().Tx(), cfg), cfg)
 		return
 	}
 }
 
 // HandleItemUseOnBlock sets pos2 with the wand or applies a brush to the looked-at block.
-func (h *Handler) HandleItemUseOnBlock(ctx *player.Context, pos cube.Pos, _ cube.Face, _ mgl64.Vec3) {
+func (h *Handler) HandleItemUseOnBlock(ctx *player.Context, pos cube.Pos, face cube.Face, _ mgl64.Vec3) {
 	if h.heldWand() {
 		ctx.Cancel()
 		s := session.Ensure(h.p)
@@ -58,7 +59,7 @@ func (h *Handler) HandleItemUseOnBlock(ctx *player.Context, pos cube.Pos, _ cube
 	}
 	if cfg, ok := h.heldBrush(); ok {
 		ctx.Cancel()
-		h.applyBrush(ctx.Val().Tx(), pos, cfg)
+		h.applyBrush(ctx.Val().Tx(), service.BrushAnchorFromSurface(pos.Side(face), face, cfg), cfg)
 		return
 	}
 }
@@ -115,7 +116,7 @@ func (h *Handler) applyBrush(tx *world.Tx, target cube.Pos, cfg service.BrushCon
 
 var brushTraceBox = cube.Box(-0.125, -0.125, -0.125, 0.125, 0.125, 0.125)
 
-func (h *Handler) brushTarget(tx *world.Tx) cube.Pos {
+func (h *Handler) brushTarget(tx *world.Tx, cfg service.BrushConfig) cube.Pos {
 	start := h.p.Position().Add(mgl64.Vec3{0, h.p.EyeHeight()})
 	dir := h.p.Rotation().Vec3()
 	end := start.Add(dir.Mul(h.cfg.BrushMaxDistance))
@@ -132,18 +133,49 @@ func (h *Handler) brushTarget(tx *world.Tx) cube.Pos {
 		}
 	}
 	if res, ok := trace.Perform(start, end, tx, brushTraceBox, filter); ok {
-		return brushTargetFromTrace(res, dir)
+		return brushTargetFromTrace(res, dir, cfg)
 	}
-	return cube.PosFromVec3(end)
+	surface := cube.PosFromVec3(start.Add(dir.Mul(brushAirDistance(cfg, h.cfg.BrushMaxDistance))))
+	return service.BrushAnchorFromSurface(surface, dominantFace(dir), cfg)
 }
 
 type blockTraceResult interface {
 	BlockPosition() cube.Pos
 }
 
-func brushTargetFromTrace(res trace.Result, dir mgl64.Vec3) cube.Pos {
+func brushTargetFromTrace(res trace.Result, dir mgl64.Vec3, cfg service.BrushConfig) cube.Pos {
 	if block, ok := res.(blockTraceResult); ok {
-		return block.BlockPosition()
+		return service.BrushAnchorFromSurface(block.BlockPosition().Side(res.Face()), res.Face(), cfg)
 	}
-	return cube.PosFromVec3(res.Position().Sub(dir.Mul(1e-4)))
+	surface := cube.PosFromVec3(res.Position().Sub(dir.Mul(1e-4)))
+	return service.BrushAnchorFromSurface(surface, dominantFace(dir), cfg)
+}
+
+func brushAirDistance(cfg service.BrushConfig, maxDistance float64) float64 {
+	if cfg.Range <= 0 {
+		return maxDistance
+	}
+	return min(float64(cfg.Range), maxDistance)
+}
+
+func dominantFace(dir mgl64.Vec3) cube.Face {
+	x, y, z := dir[0], dir[1], dir[2]
+	ax, ay, az := math.Abs(x), math.Abs(y), math.Abs(z)
+	switch {
+	case ay >= ax && ay >= az:
+		if y < 0 {
+			return cube.FaceDown
+		}
+		return cube.FaceUp
+	case ax >= az:
+		if x < 0 {
+			return cube.FaceWest
+		}
+		return cube.FaceEast
+	default:
+		if z < 0 {
+			return cube.FaceNorth
+		}
+		return cube.FaceSouth
+	}
 }
