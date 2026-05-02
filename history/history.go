@@ -1,6 +1,8 @@
 package history
 
 import (
+	"slices"
+
 	"github.com/df-mc/dragonfly/server/block/cube"
 	"github.com/df-mc/dragonfly/server/world"
 	"github.com/df-mc/we/parse"
@@ -31,6 +33,20 @@ type Batch struct {
 // NewBatch creates a batch; brush batches go on the isolated brush undo stack.
 func NewBatch(brush bool) *Batch {
 	return &Batch{Brush: brush, index: map[cube.Pos]int{}}
+}
+
+// Grow preallocates storage for up to n touched positions. It is a performance
+// hint for large edits and does not change batch semantics.
+func (b *Batch) Grow(n int) {
+	if b == nil || n <= 0 {
+		return
+	}
+	if b.index == nil {
+		b.index = make(map[cube.Pos]int, n)
+	} else if len(b.index) == 0 {
+		b.index = make(map[cube.Pos]int, n)
+	}
+	b.changes = slices.Grow(b.changes, n)
 }
 
 func snapshotAt(tx *world.Tx, pos cube.Pos) snapshot {

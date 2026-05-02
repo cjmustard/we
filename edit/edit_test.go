@@ -1,6 +1,7 @@
 package edit_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -71,6 +72,75 @@ func TestFillUndoRedoBatch(t *testing.T) {
 			}
 		})
 	})
+}
+
+func TestFillAreaLiquidUndoRedoBatch(t *testing.T) {
+	var failure string
+	withTx(t, func(tx *world.Tx) {
+		pos := cube.Pos{0, 0, 0}
+		before := mcblock.Dirt{}
+		after := mcblock.Water{Depth: 8, Still: true}
+		tx.SetBlock(pos, before, nil)
+
+		h := history.NewHistory(10)
+		batch := history.NewBatch(false)
+		edit.FillArea(tx, geo.NewArea(0, 0, 0, 0, 0, 0), []world.Block{after}, batch)
+		if got := h.Record(batch); got != 1 {
+			failure = fmt.Sprintf("Record() = %d, want 1", got)
+			return
+		}
+
+		liq, ok := tx.Liquid(pos)
+		if !parse.SameBlock(tx.Block(pos), after) || !parse.SameLiquid(liq, ok, after, true) {
+			failure = fmt.Sprintf("fill liquid state = block %T liquid %T/%v, want water", tx.Block(pos), liq, ok)
+			return
+		}
+		if !h.Undo(tx, false) {
+			failure = "Undo returned false"
+			return
+		}
+		if !parse.SameBlock(tx.Block(pos), before) {
+			failure = "undo did not restore original block"
+			return
+		}
+		if liq, ok := tx.Liquid(pos); ok {
+			failure = fmt.Sprintf("undo left liquid layer %T", liq)
+			return
+		}
+		if !h.Redo(tx, false) {
+			failure = "Redo returned false"
+			return
+		}
+		liq, ok = tx.Liquid(pos)
+		if !parse.SameBlock(tx.Block(pos), after) || !parse.SameLiquid(liq, ok, after, true) {
+			failure = "redo did not restore liquid fill"
+		}
+	})
+	if failure != "" {
+		t.Fatal(failure)
+	}
+}
+
+func TestClearAreaRemovesLiquidLayer(t *testing.T) {
+	var failure string
+	withTx(t, func(tx *world.Tx) {
+		pos := cube.Pos{0, 0, 0}
+		tx.SetBlock(pos, mcblock.Stone{}, nil)
+		tx.SetLiquid(pos, mcblock.Water{Depth: 8, Still: true})
+
+		batch := history.NewBatch(false)
+		edit.ClearArea(tx, geo.NewArea(0, 0, 0, 0, 0, 0), batch)
+		if !parse.SameBlock(tx.Block(pos), mcblock.Air{}) {
+			failure = "clear did not replace block with air"
+			return
+		}
+		if liq, ok := tx.Liquid(pos); ok {
+			failure = fmt.Sprintf("clear left liquid layer %T", liq)
+		}
+	})
+	if failure != "" {
+		t.Fatal(failure)
+	}
 }
 
 func TestClipboardPasteNoAirKeepsExistingBlocks(t *testing.T) {

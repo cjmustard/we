@@ -9,12 +9,10 @@ import (
 	"github.com/df-mc/dragonfly/server/item"
 	"github.com/df-mc/dragonfly/server/player"
 	"github.com/df-mc/dragonfly/server/world"
-	_ "github.com/df-mc/we/act"
 	_ "github.com/df-mc/we/cmd"
 	"github.com/df-mc/we/editbrush"
 	"github.com/df-mc/we/history"
 	"github.com/df-mc/we/keys"
-	"github.com/df-mc/we/palette"
 	"github.com/df-mc/we/service"
 	"github.com/df-mc/we/session"
 	"github.com/df-mc/we/visual"
@@ -25,7 +23,6 @@ import (
 type Handler struct {
 	player.NopHandler
 	p              *player.Player
-	ph             *palette.Handler
 	selectionTrace visual.Wireframe
 
 	cfg Config
@@ -36,7 +33,7 @@ type Handler struct {
 func NewHandler(p *player.Player, opts ...Option) *Handler {
 	cfg := newConfig(opts)
 	session.EnsureWithSettings(p, cfg.HistoryLimit, cfg.SchematicStore, cfg.guardrails())
-	return &Handler{p: p, ph: palette.NewHandler(p), cfg: cfg}
+	return &Handler{p: p, cfg: cfg}
 }
 
 // HandleItemUse implements item use (brush raycast when bound).
@@ -64,7 +61,6 @@ func (h *Handler) HandleItemUseOnBlock(ctx *player.Context, pos cube.Pos, face c
 		h.applyBrush(ctx.Val().Tx(), pos.Side(face), cfg)
 		return
 	}
-	h.ph.HandleItemUseOnBlock(ctx, pos, face, vec)
 }
 
 // HandleBlockBreak sets pos1 when breaking with the wand.
@@ -78,12 +74,10 @@ func (h *Handler) HandleBlockBreak(ctx *player.Context, pos cube.Pos, drops *[]i
 		h.traceSelection(s)
 		return
 	}
-	h.ph.HandleBlockBreak(ctx, pos, drops, xp)
 }
 
 // HandleQuit cleans up session state.
 func (h *Handler) HandleQuit(*player.Player) {
-	h.ph.HandleQuit()
 	h.selectionTrace.Remove(h.p)
 	session.Delete(h.p)
 }

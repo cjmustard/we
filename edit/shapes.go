@@ -141,6 +141,7 @@ func posInInclusiveBox(p, min, max cube.Pos) bool {
 // ApplyShape writes blocks at every position inside (or on the shell of) spec around anchor.
 func ApplyShape(tx *world.Tx, anchor cube.Pos, spec ShapeSpec, blocks []world.Block, batch *history.Batch) {
 	area := spec.Bounds(anchor)
+	batch.Grow(int(area.Volume()))
 	area.Range(func(x, y, z int) {
 		pos := cube.Pos{x, y, z}
 		if spec.Hollow {
