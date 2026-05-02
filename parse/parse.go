@@ -3,8 +3,6 @@ package parse
 import (
 	"encoding/json"
 	"fmt"
-	"sort"
-	"strconv"
 	"strings"
 
 	mcblock "github.com/df-mc/dragonfly/server/block"
@@ -19,8 +17,7 @@ type BlockState struct {
 
 // BlockKey is a comparable block identity for hot-path equality checks.
 type BlockKey struct {
-	Name       string
-	Properties string
+	Base, State uint64
 }
 
 // StateOfBlock encodes a block for storage.
@@ -37,8 +34,8 @@ func BlockKeyOf(b world.Block) BlockKey {
 	if b == nil {
 		b = mcblock.Air{}
 	}
-	name, props := b.EncodeBlock()
-	return BlockKey{Name: name, Properties: propertyKey(props)}
+	base, state := b.Hash()
+	return BlockKey{Base: base, State: state}
 }
 
 // BlockFromState decodes a stored block state.
@@ -173,79 +170,6 @@ func IsFluidBlock(b world.Block) bool {
 	default:
 		return false
 	}
-}
-
-func propertyKey(props map[string]any) string {
-	if len(props) == 0 {
-		return ""
-	}
-	keys := make([]string, 0, len(props))
-	for k := range props {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	var b strings.Builder
-	for _, k := range keys {
-		b.WriteString(strconv.Quote(k))
-		b.WriteByte('=')
-		writePropertyValue(&b, props[k])
-		b.WriteByte(';')
-	}
-	return b.String()
-}
-
-func writePropertyValue(b *strings.Builder, v any) {
-	switch v := v.(type) {
-	case string:
-		b.WriteByte('s')
-		b.WriteString(strconv.Quote(v))
-	case bool:
-		b.WriteByte('b')
-		if v {
-			b.WriteByte('1')
-		} else {
-			b.WriteByte('0')
-		}
-	case int:
-		writeIntProperty(b, int64(v))
-	case int8:
-		writeIntProperty(b, int64(v))
-	case int16:
-		writeIntProperty(b, int64(v))
-	case int32:
-		writeIntProperty(b, int64(v))
-	case int64:
-		writeIntProperty(b, v)
-	case uint:
-		writeUintProperty(b, uint64(v))
-	case uint8:
-		writeUintProperty(b, uint64(v))
-	case uint16:
-		writeUintProperty(b, uint64(v))
-	case uint32:
-		writeUintProperty(b, uint64(v))
-	case uint64:
-		writeUintProperty(b, v)
-	case float32:
-		b.WriteByte('f')
-		b.WriteString(strconv.FormatFloat(float64(v), 'g', -1, 32))
-	case float64:
-		b.WriteByte('f')
-		b.WriteString(strconv.FormatFloat(v, 'g', -1, 64))
-	default:
-		fmt.Fprintf(b, "%T:%v", v, v)
-	}
-}
-
-func writeIntProperty(b *strings.Builder, v int64) {
-	b.WriteByte('i')
-	b.WriteString(strconv.FormatInt(v, 10))
-}
-
-func writeUintProperty(b *strings.Builder, v uint64) {
-	b.WriteByte('u')
-	b.WriteString(strconv.FormatUint(v, 10))
 }
 
 // SerialBlock is JSON for schematic disk format.
