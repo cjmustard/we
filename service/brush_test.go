@@ -29,3 +29,35 @@ func TestApplyBrushRejectsLargeBrush(t *testing.T) {
 		}
 	})
 }
+
+func TestBrushAnchorFromSurfaceExtendsShapeOutward(t *testing.T) {
+	cfg := service.BrushConfig{Type: service.BrushSphere, Radius: 3, Height: 7}
+	tests := []struct {
+		name    string
+		surface cube.Pos
+		face    cube.Face
+		want    cube.Pos
+	}{
+		{name: "up", surface: cube.Pos{10, 65, 10}, face: cube.FaceUp, want: cube.Pos{10, 68, 10}},
+		{name: "down", surface: cube.Pos{10, 63, 10}, face: cube.FaceDown, want: cube.Pos{10, 60, 10}},
+		{name: "east", surface: cube.Pos{11, 64, 10}, face: cube.FaceEast, want: cube.Pos{14, 64, 10}},
+		{name: "west", surface: cube.Pos{9, 64, 10}, face: cube.FaceWest, want: cube.Pos{6, 64, 10}},
+		{name: "south", surface: cube.Pos{10, 64, 11}, face: cube.FaceSouth, want: cube.Pos{10, 64, 14}},
+		{name: "north", surface: cube.Pos{10, 64, 9}, face: cube.FaceNorth, want: cube.Pos{10, 64, 6}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := service.BrushAnchorFromSurface(tt.surface, tt.face, cfg); got != tt.want {
+				t.Fatalf("BrushAnchorFromSurface() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBrushAnchorFromSurfaceLeavesLineAtSurface(t *testing.T) {
+	cfg := service.BrushConfig{Type: service.BrushLine, Radius: 3, Height: 7}
+	surface := cube.Pos{10, 65, 10}
+	if got := service.BrushAnchorFromSurface(surface, cube.FaceUp, cfg); got != surface {
+		t.Fatalf("BrushAnchorFromSurface() = %v, want %v", got, surface)
+	}
+}
