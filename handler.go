@@ -23,6 +23,7 @@ type Handler struct {
 	player.NopHandler
 	p              *player.Player
 	selectionTrace visual.Wireframe
+	brushTrace     visual.Wireframe
 
 	cfg Config
 }
@@ -39,7 +40,13 @@ func NewHandler(p *player.Player, opts ...Option) *Handler {
 func (h *Handler) HandleItemUse(ctx *player.Context) {
 	if cfg, ok := h.heldBrush(); ok {
 		ctx.Cancel()
-		h.applyBrush(ctx.Val().Tx(), h.brushTarget(ctx.Val().Tx(), cfg), cfg)
+		start := h.brushRayStart()
+		target := h.brushTarget(ctx.Val().Tx(), cfg, start)
+		if h.applyBrush(ctx.Val().Tx(), target, cfg) {
+			h.traceBrush(start, target, cfg)
+		} else {
+			h.brushTrace.Remove(h.p)
+		}
 		return
 	}
 }
@@ -57,7 +64,12 @@ func (h *Handler) HandleItemUseOnBlock(ctx *player.Context, pos cube.Pos, face c
 	}
 	if cfg, ok := h.heldBrush(); ok {
 		ctx.Cancel()
-		h.applyBrush(ctx.Val().Tx(), service.BrushAnchorFromSurface(pos.Side(face), face, cfg), cfg)
+		target := service.BrushAnchorFromSurface(pos.Side(face), face, cfg)
+		if h.applyBrush(ctx.Val().Tx(), target, cfg) {
+			h.traceBrush(h.brushRayStart(), target, cfg)
+		} else {
+			h.brushTrace.Remove(h.p)
+		}
 		return
 	}
 }
@@ -79,6 +91,7 @@ func (h *Handler) HandleBlockBreak(ctx *player.Context, pos cube.Pos, drops *[]i
 // retention for reconnects during the same server lifetime.
 func (h *Handler) HandleQuit(*player.Player) {
 	h.selectionTrace.Remove(h.p)
+	h.brushTrace.Remove(h.p)
 	session.Delete(h.p)
 }
 
@@ -88,10 +101,11 @@ func (h *Handler) traceSelection(s *session.Session) {
 		h.selectionTrace.Remove(h.p)
 		return
 	}
-	h.selectionTrace.Draw(h.p, visual.BoxSegments(visual.AreaBox(area)), selectionTraceColour)
+	h.selectionTrace.Draw(h.p, visual.AreaSegments(area), selectionTraceColour)
 }
 
 var selectionTraceColour = color.RGBA{R: 0, G: 255, B: 255, A: 255}
+var brushTraceColour = color.RGBA{R: 255, G: 180, B: 0, A: 255}
 
 func (h *Handler) heldWand() bool {
 	held, _ := h.p.HeldItems()
@@ -104,17 +118,32 @@ func (h *Handler) heldBrush() (service.BrushConfig, bool) {
 	return editbrush.ConfigFromItem(held)
 }
 
-func (h *Handler) applyBrush(tx *world.Tx, target cube.Pos, cfg service.BrushConfig) {
+func (h *Handler) applyBrush(tx *world.Tx, target cube.Pos, cfg service.BrushConfig) bool {
 	actor := service.BrushActor{Position: h.p.Position(), Rotation: h.p.Rotation()}
 	if err := service.ApplyBrushAndRecord(tx, session.Ensure(h.p), actor, target, cfg, h.cfg.SchematicStore, h.cfg.guardrails()); err != nil {
 		h.p.Message(err.Error())
+		return false
 	}
+	return true
 }
 
 const brushRaySelfSkipDistance = 1.0
 
-func (h *Handler) brushTarget(tx *world.Tx, cfg service.BrushConfig) cube.Pos {
-	start := h.p.Position().Add(mgl64.Vec3{0, h.p.EyeHeight()})
+func (h *Handler) brushRayStart() mgl64.Vec3 {
+	return h.p.Position().Add(mgl64.Vec3{0, h.p.EyeHeight()})
+}
+
+func (h *Handler) traceBrush(start mgl64.Vec3, target cube.Pos, cfg service.BrushConfig) {
+	segments := []visual.Segment{visual.LineSegment(start, target.Vec3Centre())}
+	if area, ok := service.BrushVolumeBounds(target, cfg); ok {
+		segments = append(segments, visual.AreaSegments(area)...)
+	} else {
+		segments = append(segments, visual.BlockSegments(target, target)...)
+	}
+	h.brushTrace.Draw(h.p, segments, brushTraceColour)
+}
+
+func (h *Handler) brushTarget(tx *world.Tx, cfg service.BrushConfig, start mgl64.Vec3) cube.Pos {
 	dir := h.p.Rotation().Vec3()
 	end := start.Add(dir.Mul(h.cfg.BrushMaxDistance))
 	if pos, face, ok := traceBrushBlock(start, end, tx, brushRaySelfSkipDistance); ok {

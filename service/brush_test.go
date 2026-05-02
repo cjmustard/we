@@ -89,3 +89,21 @@ func TestBrushAnchorFromSurfaceLeavesLineAtSurface(t *testing.T) {
 		t.Fatalf("BrushAnchorFromSurface() = %v, want %v", got, surface)
 	}
 }
+
+func TestBrushVolumeBounds(t *testing.T) {
+	area, ok := service.BrushVolumeBounds(cube.Pos{10, 20, 30}, service.BrushConfig{
+		Type:   service.BrushCube,
+		Length: 3,
+		Width:  5,
+		Height: 2,
+	})
+	if !ok {
+		t.Fatal("BrushVolumeBounds ok = false, want true")
+	}
+	if area.Min != (cube.Pos{9, 20, 28}) || area.Max != (cube.Pos{11, 21, 32}) {
+		t.Fatalf("BrushVolumeBounds = %v-%v", area.Min, area.Max)
+	}
+	if _, ok := service.BrushVolumeBounds(cube.Pos{10, 20, 30}, service.BrushConfig{Type: service.BrushLine}); ok {
+		t.Fatal("BrushVolumeBounds ok = true for line brush, want false")
+	}
+}

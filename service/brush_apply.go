@@ -7,6 +7,7 @@ import (
 	"github.com/df-mc/dragonfly/server/block/cube"
 	"github.com/df-mc/dragonfly/server/world"
 	"github.com/df-mc/we/edit"
+	"github.com/df-mc/we/geo"
 	"github.com/df-mc/we/guardrail"
 	"github.com/df-mc/we/history"
 	"github.com/go-gl/mathgl/mgl64"
@@ -26,8 +27,8 @@ func ApplyBrush(tx *world.Tx, actor BrushActor, target cube.Pos, cfg BrushConfig
 		return err
 	}
 	brushType := strings.ToLower(cfg.Type)
-	if brushTypeUsesShapeVolume(brushType) {
-		if err := limits.CheckBrushVolume(cfg.shapeSpec().Bounds(target).Volume()); err != nil {
+	if bounds, ok := BrushVolumeBounds(target, cfg); ok {
+		if err := limits.CheckBrushVolume(bounds.Volume()); err != nil {
 			return err
 		}
 	}
@@ -82,6 +83,15 @@ func ApplyBrushAndRecord(tx *world.Tx, s Session, actor BrushActor, target cube.
 	}
 	s.Record(batch)
 	return nil
+}
+
+// BrushVolumeBounds returns the inclusive area used for brush volume checks and
+// visual previews. Brushes without a shape volume return ok=false.
+func BrushVolumeBounds(target cube.Pos, cfg BrushConfig) (area geo.Area, ok bool) {
+	if !brushTypeUsesShapeVolume(strings.ToLower(cfg.Type)) {
+		return geo.Area{}, false
+	}
+	return cfg.shapeSpec().Bounds(target), true
 }
 
 // BrushAnchorFromSurface returns the brush anchor for an aimed surface. Shape

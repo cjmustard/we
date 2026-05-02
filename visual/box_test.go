@@ -40,3 +40,17 @@ func TestBoxSegmentsReturnsWireframeEdges(t *testing.T) {
 		t.Fatalf("last segment = %v", segments[11])
 	}
 }
+
+func TestAreaSegmentsMatchesBoxSegments(t *testing.T) {
+	area := geo.NewArea(1, 2, 3, 4, 5, 6)
+	got := AreaSegments(area)
+	want := BoxSegments(AreaBox(area))
+	if len(got) != len(want) {
+		t.Fatalf("segment count = %d, want %d", len(got), len(want))
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("segment %d = %v, want %v", i, got[i], want[i])
+		}
+	}
+}
