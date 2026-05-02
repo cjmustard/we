@@ -73,10 +73,21 @@ func ApplyBrush(tx *world.Tx, actor BrushActor, target cube.Pos, cfg BrushConfig
 	return nil
 }
 
-// BrushAnchorFromSurface returns the brush anchor for a clicked surface block.
-// Shape-volume brushes are moved so their nearest edge starts at surface and
-// the generated volume extends out through face instead of being centred inside
-// the clicked block/player. Non-volume brushes use surface directly.
+// ApplyBrushAndRecord applies a brush and records the resulting brush history
+// batch on s. It keeps brush undo/redo bookkeeping out of Dragonfly adapters.
+func ApplyBrushAndRecord(tx *world.Tx, s Session, actor BrushActor, target cube.Pos, cfg BrushConfig, store edit.SchematicStore, limits guardrail.Limits) error {
+	batch := history.NewBatch(true)
+	if err := ApplyBrush(tx, actor, target, cfg, store, limits, batch); err != nil {
+		return err
+	}
+	s.Record(batch)
+	return nil
+}
+
+// BrushAnchorFromSurface returns the brush anchor for an aimed surface. Shape
+// volume brushes are moved so their nearest edge starts at surface and the
+// generated volume extends out through face instead of being centred inside the
+// clicked block/player. Non-volume brushes use surface directly.
 func BrushAnchorFromSurface(surface cube.Pos, face cube.Face, cfg BrushConfig) cube.Pos {
 	if !brushTypeUsesShapeVolume(strings.ToLower(cfg.Type)) {
 		return surface

@@ -4,11 +4,14 @@ import (
 	"strings"
 	"testing"
 
+	mcblock "github.com/df-mc/dragonfly/server/block"
 	"github.com/df-mc/dragonfly/server/block/cube"
 	"github.com/df-mc/dragonfly/server/world"
 	"github.com/df-mc/we/edit"
+	"github.com/df-mc/we/geo"
 	"github.com/df-mc/we/guardrail"
 	"github.com/df-mc/we/history"
+	"github.com/df-mc/we/parse"
 	"github.com/df-mc/we/service"
 )
 
@@ -26,6 +29,31 @@ func TestApplyBrushRejectsLargeBrush(t *testing.T) {
 		}
 		if batch.Len() != 0 {
 			t.Fatalf("batch Len = %d, want 0", batch.Len())
+		}
+	})
+}
+
+func TestApplyBrushAndRecordUsesBrushHistory(t *testing.T) {
+	withTx(t, func(tx *world.Tx) {
+		s := newFakeSession(geo.NewArea(0, 0, 0, 0, 0, 0))
+		target := cube.Pos{0, 0, 0}
+		err := service.ApplyBrushAndRecord(tx, s, service.BrushActor{}, target, service.BrushConfig{
+			Type:   service.BrushCube,
+			Length: 1,
+			Width:  1,
+			Height: 1,
+		}, edit.DefaultSchematicStore(), guardrail.Limits{})
+		if err != nil {
+			t.Fatalf("ApplyBrushAndRecord error = %v", err)
+		}
+		if !parse.SameBlock(tx.Block(target), mcblock.Stone{}) {
+			t.Fatal("brush did not place the expected block")
+		}
+		if err := service.Undo(tx, s, true); err != nil {
+			t.Fatalf("brush undo error = %v", err)
+		}
+		if !parse.IsAir(tx.Block(target)) {
+			t.Fatal("brush edit was not recorded on the brush history stack")
 		}
 	})
 }
