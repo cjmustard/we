@@ -1,6 +1,7 @@
 package session
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -59,6 +60,25 @@ func TestReleaseDropsSessionWithoutClipboard(t *testing.T) {
 	if _, ok := lookupID(id, now); ok {
 		t.Fatal("empty session survived player release")
 	}
+}
+
+func TestReleaseCanRunWithHistoryOperations(t *testing.T) {
+	clearSessions(t)
+	id := uuid.New()
+	now := time.Date(2026, 5, 2, 0, 0, 0, 0, time.UTC)
+	s := &Session{clipboard: &edit.Clipboard{OriginDir: cube.North}, history: history.NewHistory(1), historyLimit: 1}
+	sessions.Store(id, s)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.Record(history.NewBatch(false))
+		}()
+	}
+	releaseID(id, now)
+	wg.Wait()
 }
 
 func clearSessions(t *testing.T) {

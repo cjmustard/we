@@ -24,6 +24,7 @@ type Session struct {
 	p *player.Player
 
 	mu             sync.Mutex
+	historyMu      sync.Mutex
 	selection      Selection
 	clipboard      *edit.Clipboard
 	schematics     edit.SchematicStore
@@ -136,7 +137,9 @@ func releaseID(id uuid.UUID, now time.Time) {
 	}
 	s.p = nil
 	s.selection = Selection{}
+	s.historyMu.Lock()
 	s.history = history.NewHistory(s.historyLimit)
+	s.historyMu.Unlock()
 	s.disconnectedAt = now
 }
 
@@ -243,15 +246,21 @@ func (s *Session) PosCorners() (pos1, pos2 cube.Pos, ok bool) {
 
 // Record adds an undo batch (commands vs brush split inside history).
 func (s *Session) Record(batch *history.Batch) int {
+	s.historyMu.Lock()
+	defer s.historyMu.Unlock()
 	return s.history.Record(batch)
 }
 
 // Undo runs undo; brush selects the brush-only stack.
 func (s *Session) Undo(tx *world.Tx, brush bool) bool {
+	s.historyMu.Lock()
+	defer s.historyMu.Unlock()
 	return s.history.Undo(tx, brush)
 }
 
 // Redo runs redo.
 func (s *Session) Redo(tx *world.Tx, brush bool) bool {
+	s.historyMu.Lock()
+	defer s.historyMu.Unlock()
 	return s.history.Redo(tx, brush)
 }

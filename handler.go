@@ -2,7 +2,6 @@ package we
 
 import (
 	"image/color"
-	"iter"
 	"math"
 
 	"github.com/df-mc/dragonfly/server/block/cube"
@@ -115,41 +114,38 @@ func (h *Handler) applyBrush(tx *world.Tx, target cube.Pos, cfg service.BrushCon
 	session.Ensure(h.p).Record(batch)
 }
 
-var brushTraceBox = cube.Box(-0.125, -0.125, -0.125, 0.125, 0.125, 0.125)
+const brushRaySelfSkipDistance = 1.0
 
 func (h *Handler) brushTarget(tx *world.Tx, cfg service.BrushConfig) cube.Pos {
 	start := h.p.Position().Add(mgl64.Vec3{0, h.p.EyeHeight()})
 	dir := h.p.Rotation().Vec3()
 	end := start.Add(dir.Mul(h.cfg.BrushMaxDistance))
-	filter := func(seq iter.Seq[world.Entity]) iter.Seq[world.Entity] {
-		return func(yield func(world.Entity) bool) {
-			for e := range seq {
-				if e == h.p {
-					continue
-				}
-				if !yield(e) {
-					return
-				}
-			}
-		}
-	}
-	if res, ok := trace.Perform(start, end, tx, brushTraceBox, filter); ok {
-		return brushTargetFromTrace(res, dir, cfg)
+	if pos, face, ok := traceBrushBlock(start, end, tx, brushRaySelfSkipDistance); ok {
+		return service.BrushAnchorFromSurface(pos.Side(face), face, cfg)
 	}
 	surface := cube.PosFromVec3(start.Add(dir.Mul(brushAirDistance(cfg, h.cfg.BrushMaxDistance))))
 	return service.BrushAnchorFromSurface(surface, dominantFace(dir), cfg)
 }
 
-type blockTraceResult interface {
-	BlockPosition() cube.Pos
-}
-
-func brushTargetFromTrace(res trace.Result, dir mgl64.Vec3, cfg service.BrushConfig) cube.Pos {
-	if block, ok := res.(blockTraceResult); ok {
-		return service.BrushAnchorFromSurface(block.BlockPosition().Side(res.Face()), res.Face(), cfg)
-	}
-	surface := cube.PosFromVec3(res.Position().Sub(dir.Mul(1e-4)))
-	return service.BrushAnchorFromSurface(surface, dominantFace(dir), cfg)
+func traceBrushBlock(start, end mgl64.Vec3, tx *world.Tx, skipDistance float64) (cube.Pos, cube.Face, bool) {
+	var (
+		hitPos  cube.Pos
+		hitFace cube.Face
+		hit     bool
+	)
+	skipDistanceSqr := skipDistance * skipDistance
+	trace.TraverseBlocks(start, end, func(pos cube.Pos) bool {
+		res, ok := trace.BlockIntercept(pos, tx, tx.Block(pos), start, end)
+		if !ok {
+			return true
+		}
+		if res.Position().Sub(start).LenSqr() < skipDistanceSqr {
+			return true
+		}
+		hitPos, hitFace, hit = res.BlockPosition(), res.Face(), true
+		return false
+	})
+	return hitPos, hitFace, hit
 }
 
 func brushAirDistance(cfg service.BrushConfig, maxDistance float64) float64 {
