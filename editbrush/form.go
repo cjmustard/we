@@ -16,7 +16,7 @@ func SendBrushForm(p *player.Player) {
 	p.SendForm(form.New(brushConfigForm{
 		Type:            form.NewDropdown("Brush type", service.BrushTypes(), 0),
 		Shape:           form.NewDropdown("Footprint shape", service.BrushShapes(), 0),
-		Mode:            form.NewDropdown("Mode", []string{"erode", "expand"}, 0),
+		Mode:            form.NewDropdown("Mode", service.BrushModes(), 0),
 		Blocks:          form.NewInput("Blocks", "stone", "stone,dirt"),
 		From:            form.NewInput("Replace/from blocks", "", "all or stone,dirt"),
 		Schematics:      form.NewInput("Schematics", "", "name or name1,name2"),
@@ -82,7 +82,7 @@ func (f brushConfigForm) Submit(submitter form.Submitter, _ *world.Tx) {
 	cfg := service.BrushConfig{
 		Type:            service.BrushTypes()[f.Type.Value()],
 		Shape:           service.BrushShapes()[f.Shape.Value()],
-		Mode:            []string{"erode", "expand"}[f.Mode.Value()],
+		Mode:            service.BrushModes()[f.Mode.Value()],
 		Radius:          int(f.Radius.Value()),
 		Height:          int(f.Height.Value()),
 		Length:          int(f.Length.Value()),

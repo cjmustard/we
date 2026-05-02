@@ -79,7 +79,7 @@ func dominantDir(from, to cube.Pos) cube.Pos {
 }
 
 func applyTerraform(tx *world.Tx, target cube.Pos, cfg BrushConfig, blocks []world.Block, batch *history.Batch) {
-	if strings.EqualFold(cfg.Mode, "expand") {
+	if strings.EqualFold(cfg.Mode, BrushModeExpand) {
 		applyBrushShape(tx, target, cfg, func(pos cube.Pos) {
 			if !parse.IsAir(tx.Block(pos)) {
 				return

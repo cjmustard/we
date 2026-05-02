@@ -91,6 +91,18 @@ func isShapeBrush(brushType string) bool {
 	return false
 }
 
+const (
+	BrushModeErode  = "erode"
+	BrushModeExpand = "expand"
+)
+
+var brushModes = []string{BrushModeErode, BrushModeExpand}
+
+// BrushModes returns supported sculpt brush modes in form display order.
+func BrushModes() []string {
+	return append([]string(nil), brushModes...)
+}
+
 // BrushConfig is the JSON-serialised brush state stored by brush adapters.
 //
 // Type selects the brush behaviour; the remaining fields are only consulted by
@@ -125,7 +137,7 @@ type BrushConfig struct {
 
 // DefaultBrushConfig returns factory defaults for quick //brush binding.
 func DefaultBrushConfig() BrushConfig {
-	return BrushConfig{Type: BrushSphere, Shape: BrushSphere, Mode: "erode", Radius: 3, Height: 5, Length: 5, Width: 5, Thickness: 1, Range: 32, Strength: 1}
+	return BrushConfig{Type: BrushSphere, Shape: BrushSphere, Mode: BrushModeErode, Radius: 3, Height: 5, Length: 5, Width: 5, Thickness: 1, Range: 32, Strength: 1}
 }
 
 func (c BrushConfig) shapeSpec() edit.ShapeSpec {
