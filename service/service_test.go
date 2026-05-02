@@ -155,6 +155,31 @@ func TestCopyPasteAnchorsSelectionAtCenter(t *testing.T) {
 	})
 }
 
+func TestCopyPasteEvenSelectionAnchorIsStableForNegativeCoordinates(t *testing.T) {
+	withTx(t, func(tx *world.Tx) {
+		s := newFakeSession(geo.NewArea(-2, 0, 0, -1, 0, 0))
+		tx.SetBlock(cube.Pos{-2, 0, 0}, mcblock.Stone{}, nil)
+		tx.SetBlock(cube.Pos{-1, 0, 0}, mcblock.Dirt{}, nil)
+
+		if _, err := service.Copy(tx, s, cube.Pos{-2, 0, 0}, cube.North, nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.Paste(tx, s, cube.Pos{10, 0, 0}, cube.North, []string{"-a"}); err != nil {
+			t.Fatal(err)
+		}
+
+		if !parse.SameBlock(tx.Block(cube.Pos{10, 0, 0}), mcblock.Stone{}) {
+			t.Fatal("lower-middle block did not paste at target")
+		}
+		if !parse.SameBlock(tx.Block(cube.Pos{11, 0, 0}), mcblock.Dirt{}) {
+			t.Fatal("upper block did not paste after target")
+		}
+		if !parse.IsAir(tx.Block(cube.Pos{9, 0, 0})) {
+			t.Fatal("negative even-width selection pasted one block before target")
+		}
+	})
+}
+
 func TestClearClipboardRemovesStoredClipboard(t *testing.T) {
 	var hasClipboard bool
 	var err error

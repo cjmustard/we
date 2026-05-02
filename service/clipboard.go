@@ -127,10 +127,14 @@ func Schematic(tx *world.Tx, s Session, origin cube.Pos, dir cube.Direction, sto
 
 func areaCenter(area geo.Area) cube.Pos {
 	return cube.Pos{
-		(area.Min[0] + area.Max[0]) / 2,
-		(area.Min[1] + area.Max[1]) / 2,
-		(area.Min[2] + area.Max[2]) / 2,
+		midpoint(area.Min[0], area.Max[0]),
+		midpoint(area.Min[1], area.Max[1]),
+		midpoint(area.Min[2], area.Max[2]),
 	}
+}
+
+func midpoint(minimum, maximum int) int {
+	return minimum + (maximum-minimum)/2
 }
 
 // Undo reverts the most recent batch. If brush is true, only the brush stack is
