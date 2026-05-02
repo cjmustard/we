@@ -7,13 +7,15 @@ import (
 	"github.com/df-mc/dragonfly/server/block/cube"
 	"github.com/df-mc/dragonfly/server/world"
 	"github.com/df-mc/we/edit"
+	"github.com/df-mc/we/geo"
 	"github.com/df-mc/we/history"
 	"github.com/df-mc/we/parse"
 )
 
 // Copy stores the current selection on s's clipboard. Optional args of "only <blocks>"
-// restrict the copy to those block types.
-func Copy(tx *world.Tx, s Session, origin cube.Pos, dir cube.Direction, args []string) (CopyResult, error) {
+// restrict the copy to those block types. The clipboard is anchored at the
+// selection centre so shapes paste around the target instead of from one corner.
+func Copy(tx *world.Tx, s Session, _ cube.Pos, dir cube.Direction, args []string) (CopyResult, error) {
 	area, err := selectedArea(s)
 	if err != nil {
 		return CopyResult{}, err
@@ -30,7 +32,7 @@ func Copy(tx *world.Tx, s Session, origin cube.Pos, dir cube.Direction, args []s
 		}
 		mask = edit.BlockMask{Blocks: blocks}
 	}
-	cb := edit.CopySelection(tx, area, origin, dir, mask, only)
+	cb := edit.CopySelection(tx, area, areaCenter(area), dir, mask, only)
 	s.SetClipboard(cb)
 	return CopyResult{Copied: len(cb.Entries)}, nil
 }
@@ -55,12 +57,12 @@ func ClearClipboard(s Session) {
 }
 
 // Cut copies the selection to s's clipboard (including air) and clears it to air.
-func Cut(tx *world.Tx, s Session, origin cube.Pos, dir cube.Direction) (ChangeResult, error) {
+func Cut(tx *world.Tx, s Session, _ cube.Pos, dir cube.Direction) (ChangeResult, error) {
 	area, err := selectedArea(s)
 	if err != nil {
 		return ChangeResult{}, err
 	}
-	cb := edit.CopySelection(tx, area, origin, dir, edit.BlockMask{All: true, IncludeAir: true}, false)
+	cb := edit.CopySelection(tx, area, areaCenter(area), dir, edit.BlockMask{All: true, IncludeAir: true}, false)
 	s.SetClipboard(cb)
 	batch := history.NewBatch(false)
 	edit.ClearArea(tx, area, batch)
@@ -85,7 +87,7 @@ func Schematic(tx *world.Tx, s Session, origin cube.Pos, dir cube.Direction, sto
 		if err != nil {
 			return SchematicResult{}, err
 		}
-		cb := edit.CopySelection(tx, area, origin, dir, edit.BlockMask{All: true, IncludeAir: true}, false)
+		cb := edit.CopySelection(tx, area, areaCenter(area), dir, edit.BlockMask{All: true, IncludeAir: true}, false)
 		if err := store.Save(args[1], cb); err != nil {
 			return SchematicResult{}, err
 		}
@@ -120,6 +122,14 @@ func Schematic(tx *world.Tx, s Session, origin cube.Pos, dir cube.Direction, sto
 		return SchematicResult{Names: names}, nil
 	default:
 		return SchematicResult{}, fmt.Errorf("unknown schematic subcommand")
+	}
+}
+
+func areaCenter(area geo.Area) cube.Pos {
+	return cube.Pos{
+		(area.Min[0] + area.Max[0]) / 2,
+		(area.Min[1] + area.Max[1]) / 2,
+		(area.Min[2] + area.Max[2]) / 2,
 	}
 }
 

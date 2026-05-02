@@ -238,13 +238,13 @@ func (h *History) Record(batch *Batch) int {
 	h.nextSeq++
 	b.seq = h.nextSeq
 	b.redoSeq = 0
+	h.redo = nil
+	h.brushRedo = nil
 	if b.Brush {
 		h.brushUndo = appendLimited(h.brushUndo, b, h.limit)
-		h.brushRedo = nil
 		return changed
 	}
 	h.undo = appendLimited(h.undo, b, h.limit)
-	h.redo = nil
 	return changed
 }
 

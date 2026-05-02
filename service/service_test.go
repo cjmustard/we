@@ -129,6 +129,32 @@ func TestCopyPasteNoAirKeepsExistingBlocks(t *testing.T) {
 	})
 }
 
+func TestCopyPasteAnchorsSelectionAtCenter(t *testing.T) {
+	withTx(t, func(tx *world.Tx) {
+		s := newFakeSession(geo.NewArea(-1, 0, 0, 1, 0, 0))
+		tx.SetBlock(cube.Pos{-1, 0, 0}, mcblock.Stone{}, nil)
+		tx.SetBlock(cube.Pos{0, 0, 0}, mcblock.Gold{}, nil)
+		tx.SetBlock(cube.Pos{1, 0, 0}, mcblock.Dirt{}, nil)
+
+		if _, err := service.Copy(tx, s, cube.Pos{-1, 0, 0}, cube.North, nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.Paste(tx, s, cube.Pos{10, 0, 0}, cube.North, []string{"-a"}); err != nil {
+			t.Fatal(err)
+		}
+
+		if !parse.SameBlock(tx.Block(cube.Pos{9, 0, 0}), mcblock.Stone{}) {
+			t.Fatal("left side did not paste one block before target")
+		}
+		if !parse.SameBlock(tx.Block(cube.Pos{10, 0, 0}), mcblock.Gold{}) {
+			t.Fatal("selection center did not paste at target")
+		}
+		if !parse.SameBlock(tx.Block(cube.Pos{11, 0, 0}), mcblock.Dirt{}) {
+			t.Fatal("right side did not paste one block after target")
+		}
+	})
+}
+
 func TestClearClipboardRemovesStoredClipboard(t *testing.T) {
 	var hasClipboard bool
 	var err error

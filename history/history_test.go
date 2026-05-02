@@ -98,6 +98,39 @@ func TestExplicitBrushUndoStillTargetsBrushStack(t *testing.T) {
 	})
 }
 
+func TestRecordClearsCommandAndBrushRedoStacks(t *testing.T) {
+	withTx(t, func(tx *world.Tx) {
+		commandPos := cube.Pos{0, 0, 0}
+		brushPos := cube.Pos{1, 0, 0}
+		newPos := cube.Pos{2, 0, 0}
+		h := history.NewHistory(10)
+
+		command := history.NewBatch(false)
+		command.SetBlock(tx, commandPos, mcblock.Stone{})
+		h.Record(command)
+		brush := history.NewBatch(true)
+		brush.SetBlock(tx, brushPos, mcblock.Gold{})
+		h.Record(brush)
+
+		undidLatest := h.Undo(tx, false)
+		undidNext := h.Undo(tx, false)
+		if !undidLatest || !undidNext {
+			t.Fatal("expected command and brush undo to succeed")
+		}
+
+		next := history.NewBatch(false)
+		next.SetBlock(tx, newPos, mcblock.Dirt{})
+		h.Record(next)
+
+		if h.Redo(tx, false) {
+			t.Fatal("default redo succeeded after new edit")
+		}
+		if h.Redo(tx, true) {
+			t.Fatal("brush redo succeeded after new edit")
+		}
+	})
+}
+
 func TestRecordReturnsChangedCountAndSkipsNoOps(t *testing.T) {
 	var failure string
 	withTx(t, func(tx *world.Tx) {
