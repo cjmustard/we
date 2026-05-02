@@ -30,6 +30,22 @@ func AreaBox(area geo.Area) Box {
 
 // BoxSegments returns the 12 wireframe edges for box.
 func BoxSegments(box Box) []Segment {
+	return box.Segments()
+}
+
+// BlockSegments returns the 12 wireframe edges outlining the inclusive block
+// range from min to max.
+func BlockSegments(min, max cube.Pos) []Segment {
+	return BlockBox(min, max).Segments()
+}
+
+// AreaSegments returns the 12 wireframe edges outlining area.
+func AreaSegments(area geo.Area) []Segment {
+	return AreaBox(area).Segments()
+}
+
+// Segments returns the 12 wireframe edges for box.
+func (box Box) Segments() []Segment {
 	minX, minY, minZ := box.Min[0], box.Min[1], box.Min[2]
 	maxX, maxY, maxZ := box.Max[0], box.Max[1], box.Max[2]
 

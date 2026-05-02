@@ -12,6 +12,11 @@ type Segment struct {
 	Start, End mgl64.Vec3
 }
 
+// LineSegment returns a single wireframe segment from start to end.
+func LineSegment(start, end mgl64.Vec3) Segment {
+	return Segment{Start: start, End: end}
+}
+
 // Wireframe manages a reusable set of debug lines. It is the generic visual
 // primitive for selection outlines, paste previews, and other predicted shapes:
 // callers provide whatever segments describe the thing they want to preview.
