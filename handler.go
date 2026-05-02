@@ -11,7 +11,6 @@ import (
 	"github.com/df-mc/dragonfly/server/world"
 	_ "github.com/df-mc/we/cmd"
 	"github.com/df-mc/we/editbrush"
-	"github.com/df-mc/we/history"
 	"github.com/df-mc/we/keys"
 	"github.com/df-mc/we/service"
 	"github.com/df-mc/we/session"
@@ -106,12 +105,10 @@ func (h *Handler) heldBrush() (service.BrushConfig, bool) {
 }
 
 func (h *Handler) applyBrush(tx *world.Tx, target cube.Pos, cfg service.BrushConfig) {
-	batch := history.NewBatch(true)
-	if err := service.ApplyBrush(tx, service.BrushActor{Position: h.p.Position(), Rotation: h.p.Rotation()}, target, cfg, h.cfg.SchematicStore, h.cfg.guardrails(), batch); err != nil {
+	actor := service.BrushActor{Position: h.p.Position(), Rotation: h.p.Rotation()}
+	if err := service.ApplyBrushAndRecord(tx, session.Ensure(h.p), actor, target, cfg, h.cfg.SchematicStore, h.cfg.guardrails()); err != nil {
 		h.p.Message(err.Error())
-		return
 	}
-	session.Ensure(h.p).Record(batch)
 }
 
 const brushRaySelfSkipDistance = 1.0
