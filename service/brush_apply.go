@@ -59,7 +59,7 @@ func ApplyBrush(tx *world.Tx, actor BrushActor, target cube.Pos, cfg BrushConfig
 		if err != nil {
 			return err
 		}
-		mask := edit.BlockMask{All: cfg.All, IncludeAir: cfg.ReplaceAir, Blocks: from}
+		mask := edit.BlockMask{All: cfg.All, IncludeAir: cfg.ReplaceAir, Blocks: from}.Prepared()
 		applyBrushShape(tx, target, cfg, func(pos cube.Pos) {
 			if mask.Match(tx.Block(pos)) {
 				batch.SetBlockFast(tx, pos, edit.ChooseBlock(blocks, nil))

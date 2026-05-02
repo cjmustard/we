@@ -251,14 +251,16 @@ func (s *Session) Record(batch *history.Batch) int {
 	return s.history.Record(batch)
 }
 
-// Undo runs undo; brush selects the brush-only stack.
+// Undo runs undo; brush selects only the brush stack, otherwise the latest
+// command or brush batch is undone.
 func (s *Session) Undo(tx *world.Tx, brush bool) bool {
 	s.historyMu.Lock()
 	defer s.historyMu.Unlock()
 	return s.history.Undo(tx, brush)
 }
 
-// Redo runs redo.
+// Redo runs redo; brush selects only the brush stack, otherwise the latest
+// undone command or brush batch is redone.
 func (s *Session) Redo(tx *world.Tx, brush bool) bool {
 	s.historyMu.Lock()
 	defer s.historyMu.Unlock()

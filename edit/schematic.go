@@ -97,7 +97,7 @@ func (s FileSchematicStore) Save(name string, cb *Clipboard) error {
 	if err := os.MkdirAll(s.dir(), 0o755); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(sf, "", "  ")
+	data, err := json.Marshal(sf)
 	if err != nil {
 		return err
 	}

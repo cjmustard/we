@@ -3,7 +3,6 @@ package parse
 import (
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"strings"
 
 	mcblock "github.com/df-mc/dragonfly/server/block"
@@ -16,6 +15,11 @@ type BlockState struct {
 	Properties map[string]any `json:"properties,omitempty"`
 }
 
+// BlockKey is a comparable block identity for hot-path equality checks.
+type BlockKey struct {
+	Base, State uint64
+}
+
 // StateOfBlock encodes a block for storage.
 func StateOfBlock(b world.Block) BlockState {
 	if b == nil {
@@ -23,6 +27,15 @@ func StateOfBlock(b world.Block) BlockState {
 	}
 	name, props := b.EncodeBlock()
 	return BlockState{Name: name, Properties: cloneProps(props)}
+}
+
+// BlockKeyOf returns a comparable identity for b without cloning properties.
+func BlockKeyOf(b world.Block) BlockKey {
+	if b == nil {
+		b = mcblock.Air{}
+	}
+	base, state := b.Hash()
+	return BlockKey{Base: base, State: state}
 }
 
 // BlockFromState decodes a stored block state.
@@ -121,14 +134,7 @@ func ParseBlock(name string) (world.Block, error) {
 
 // SameBlock compares block identities (name + properties).
 func SameBlock(a, b world.Block) bool {
-	if a == nil {
-		a = mcblock.Air{}
-	}
-	if b == nil {
-		b = mcblock.Air{}
-	}
-	as, bs := StateOfBlock(a), StateOfBlock(b)
-	return as.Name == bs.Name && reflect.DeepEqual(as.Properties, bs.Properties)
+	return BlockKeyOf(a) == BlockKeyOf(b)
 }
 
 // SameLiquid compares liquid layers using block identity.

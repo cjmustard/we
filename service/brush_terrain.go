@@ -9,6 +9,7 @@ import (
 )
 
 func brushTopLayer(tx *world.Tx, target cube.Pos, cfg BrushConfig, mask edit.BlockMask, blocks []world.Block, batch *history.Batch) {
+	mask = mask.Prepared()
 	spec := cfg.shapeSpec()
 	area := spec.Bounds(target)
 	for x := area.Min[0]; x <= area.Max[0]; x++ {
@@ -69,6 +70,7 @@ func isSurface(tx *world.Tx, pos cube.Pos) bool {
 func applyWrap(tx *world.Tx, target cube.Pos, cfg BrushConfig, blocks []world.Block, batch *history.Batch) {
 	if cfg.ExtendWrap {
 		base := tx.Block(target)
+		baseKey := parse.BlockKeyOf(base)
 		seen := map[cube.Pos]bool{target: true}
 		queue := []cube.Pos{target}
 		limit := cfg.Radius * cfg.Radius
@@ -82,7 +84,7 @@ func applyWrap(tx *world.Tx, target cube.Pos, cfg BrushConfig, blocks []world.Bl
 					continue
 				}
 				dx, dy, dz := n[0]-target[0], n[1]-target[1], n[2]-target[2]
-				if dx*dx+dy*dy+dz*dz > limit || !parse.SameBlock(tx.Block(n), base) {
+				if dx*dx+dy*dy+dz*dz > limit || parse.BlockKeyOf(tx.Block(n)) != baseKey {
 					continue
 				}
 				seen[n] = true

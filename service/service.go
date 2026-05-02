@@ -86,8 +86,7 @@ func guardrailsFor(s Session) guardrail.Limits {
 }
 
 func record(s Session, batch *history.Batch) ChangeResult {
-	s.Record(batch)
-	return ChangeResult{Changed: batch.Len()}
+	return ChangeResult{Changed: s.Record(batch)}
 }
 
 // HasFlag reports whether args contains flag (case-insensitive).

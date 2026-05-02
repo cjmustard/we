@@ -28,6 +28,8 @@ type Batch struct {
 	Brush   bool
 	changes []Change
 	index   map[cube.Pos]int
+	seq     int64
+	redoSeq int64
 }
 
 var fastBlockSetOpts = &world.SetOpts{DisableBlockUpdates: true}
@@ -53,11 +55,17 @@ func (b *Batch) Grow(n int) {
 
 func snapshotAt(tx *world.Tx, pos cube.Pos) snapshot {
 	liq, ok := tx.Liquid(pos)
-	return snapshot{Block: tx.Block(pos), Liquid: liq, HasLiq: ok, Biome: tx.Biome(pos)}
+	return newSnapshot(tx.Block(pos), liq, ok, tx.Biome(pos))
+}
+
+func newSnapshot(block world.Block, liquid world.Liquid, hasLiq bool, biome world.Biome) snapshot {
+	return snapshot{Block: block, Liquid: liquid, HasLiq: hasLiq, Biome: biome}
 }
 
 func sameSnapshot(a, b snapshot) bool {
-	return parse.SameBlock(a.Block, b.Block) && parse.SameLiquid(a.Liquid, a.HasLiq, b.Liquid, b.HasLiq) && parse.SameBiome(a.Biome, b.Biome)
+	return parse.SameBlock(a.Block, b.Block) &&
+		parse.SameLiquid(a.Liquid, a.HasLiq, b.Liquid, b.HasLiq) &&
+		parse.SameBiome(a.Biome, b.Biome)
 }
 
 func (b *Batch) ensure(tx *world.Tx, pos cube.Pos) int {
@@ -125,14 +133,14 @@ func (b *Batch) Len() int {
 	return n
 }
 
-func (b *Batch) compact() Batch {
-	out := Batch{Brush: b.Brush}
+func (b *Batch) compact() (Batch, int) {
+	out := Batch{Brush: b.Brush, changes: make([]Change, 0, len(b.changes))}
 	for _, c := range b.changes {
 		if !sameSnapshot(c.Before, c.After) {
 			out.changes = append(out.changes, c)
 		}
 	}
-	return out
+	return out, len(out.changes)
 }
 
 // BlockSnapshot is exported world state at a position (for brush displacement).
@@ -144,7 +152,7 @@ type BlockSnapshot struct {
 }
 
 func snapToInternal(s BlockSnapshot) snapshot {
-	return snapshot(s)
+	return newSnapshot(s.Block, s.Liquid, s.HasLiq, s.Biome)
 }
 
 // SnapshotAtBlock captures current state for undo-aware brush operations.
@@ -166,6 +174,12 @@ func (b *Batch) EnsurePos(tx *world.Tx, pos cube.Pos) int {
 // SetAfterForIndex refreshes the "after" snapshot for a change index (after world writes).
 func (b *Batch) SetAfterForIndex(tx *world.Tx, i int, pos cube.Pos) {
 	b.changes[i].After = snapshotAt(tx, pos)
+}
+
+// SetAfterKnownForIndex sets the "after" snapshot when the caller already
+// knows the post-write block/liquid state, avoiding an extra world read.
+func (b *Batch) SetAfterKnownForIndex(i int, block world.Block, liq world.Liquid, hasLiq bool) {
+	b.changes[i].After = newSnapshot(block, liq, hasLiq, b.changes[i].Before.Biome)
 }
 
 func applySnapshot(tx *world.Tx, pos cube.Pos, s snapshot) {
@@ -197,7 +211,8 @@ func (b Batch) Redo(tx *world.Tx) {
 
 // History holds undo/redo stacks for commands and brushes separately.
 type History struct {
-	limit int
+	limit   int
+	nextSeq int64
 
 	undo, redo           []Batch
 	brushUndo, brushRedo []Batch
@@ -211,20 +226,26 @@ func NewHistory(limit int) *History {
 	return &History{limit: limit}
 }
 
-// Record stores a compacted batch; returns new stack depth for feedback.
+// Record stores a compacted batch and returns the number of changed positions.
 func (h *History) Record(batch *Batch) int {
-	if batch == nil || batch.Len() == 0 {
+	if batch == nil {
 		return 0
 	}
-	b := batch.compact()
+	b, changed := batch.compact()
+	if changed == 0 {
+		return 0
+	}
+	h.nextSeq++
+	b.seq = h.nextSeq
+	b.redoSeq = 0
+	h.redo = nil
+	h.brushRedo = nil
 	if b.Brush {
 		h.brushUndo = appendLimited(h.brushUndo, b, h.limit)
-		h.brushRedo = nil
-		return len(h.brushUndo)
+		return changed
 	}
 	h.undo = appendLimited(h.undo, b, h.limit)
-	h.redo = nil
-	return len(h.undo)
+	return changed
 }
 
 func appendLimited(stack []Batch, b Batch, limit int) []Batch {
@@ -236,19 +257,20 @@ func appendLimited(stack []Batch, b Batch, limit int) []Batch {
 	return append(stack, b)
 }
 
-// Undo pops one batch; brush selects the brush-only stack.
+// Undo pops one batch. If brush is true, it uses only the brush stack. If brush
+// is false, it undoes the most recently recorded batch across command and brush
+// stacks.
 func (h *History) Undo(tx *world.Tx, brush bool) bool {
 	if brush {
-		if len(h.brushUndo) == 0 {
-			return false
-		}
-		i := len(h.brushUndo) - 1
-		b := h.brushUndo[i]
-		h.brushUndo = h.brushUndo[:i]
-		b.Undo(tx)
-		h.brushRedo = appendLimited(h.brushRedo, b, h.limit)
-		return true
+		return h.undoBrush(tx)
 	}
+	if latestBrushBatch(h.undo, h.brushUndo) {
+		return h.undoBrush(tx)
+	}
+	return h.undoCommand(tx)
+}
+
+func (h *History) undoCommand(tx *world.Tx) bool {
 	if len(h.undo) == 0 {
 		return false
 	}
@@ -256,23 +278,40 @@ func (h *History) Undo(tx *world.Tx, brush bool) bool {
 	b := h.undo[i]
 	h.undo = h.undo[:i]
 	b.Undo(tx)
+	h.nextSeq++
+	b.redoSeq = h.nextSeq
 	h.redo = appendLimited(h.redo, b, h.limit)
 	return true
 }
 
-// Redo restores one undone batch.
+func (h *History) undoBrush(tx *world.Tx) bool {
+	if len(h.brushUndo) == 0 {
+		return false
+	}
+	i := len(h.brushUndo) - 1
+	b := h.brushUndo[i]
+	h.brushUndo = h.brushUndo[:i]
+	b.Undo(tx)
+	h.nextSeq++
+	b.redoSeq = h.nextSeq
+	h.brushRedo = appendLimited(h.brushRedo, b, h.limit)
+	return true
+}
+
+// Redo restores one undone batch. If brush is true, it uses only the brush
+// stack. If brush is false, it redoes the most recently undone batch across
+// command and brush redo stacks.
 func (h *History) Redo(tx *world.Tx, brush bool) bool {
 	if brush {
-		if len(h.brushRedo) == 0 {
-			return false
-		}
-		i := len(h.brushRedo) - 1
-		b := h.brushRedo[i]
-		h.brushRedo = h.brushRedo[:i]
-		b.Redo(tx)
-		h.brushUndo = appendLimited(h.brushUndo, b, h.limit)
-		return true
+		return h.redoBrush(tx)
 	}
+	if latestBrushBatch(h.redo, h.brushRedo) {
+		return h.redoBrush(tx)
+	}
+	return h.redoCommand(tx)
+}
+
+func (h *History) redoCommand(tx *world.Tx) bool {
 	if len(h.redo) == 0 {
 		return false
 	}
@@ -280,6 +319,37 @@ func (h *History) Redo(tx *world.Tx, brush bool) bool {
 	b := h.redo[i]
 	h.redo = h.redo[:i]
 	b.Redo(tx)
+	b.redoSeq = 0
 	h.undo = appendLimited(h.undo, b, h.limit)
 	return true
+}
+
+func (h *History) redoBrush(tx *world.Tx) bool {
+	if len(h.brushRedo) == 0 {
+		return false
+	}
+	i := len(h.brushRedo) - 1
+	b := h.brushRedo[i]
+	h.brushRedo = h.brushRedo[:i]
+	b.Redo(tx)
+	b.redoSeq = 0
+	h.brushUndo = appendLimited(h.brushUndo, b, h.limit)
+	return true
+}
+
+func latestBrushBatch(command, brush []Batch) bool {
+	if len(brush) == 0 {
+		return false
+	}
+	if len(command) == 0 {
+		return true
+	}
+	return brush[len(brush)-1].orderSeq() > command[len(command)-1].orderSeq()
+}
+
+func (b Batch) orderSeq() int64 {
+	if b.redoSeq != 0 {
+		return b.redoSeq
+	}
+	return b.seq
 }

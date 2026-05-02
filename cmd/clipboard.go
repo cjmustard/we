@@ -93,7 +93,7 @@ func (c SchematicCommand) Run(src dcf.Source, o *dcf.Output, tx *world.Tx) {
 	}
 }
 
-// UndoCommand implements //undo [b] — reverts the last edit; "b" targets the brush stack.
+// UndoCommand implements //undo [b] — reverts the last edit; "b" targets only the brush stack.
 type UndoCommand struct {
 	playerCommand
 	Target dcf.Optional[string] `cmd:"target"`
@@ -108,7 +108,7 @@ func (c UndoCommand) Run(src dcf.Source, o *dcf.Output, tx *world.Tx) {
 	o.Print("Undo successful.")
 }
 
-// RedoCommand implements //redo [b] — restores the last undone edit; "b" targets the brush stack.
+// RedoCommand implements //redo [b] — restores the last undone edit; "b" targets only the brush stack.
 type RedoCommand struct {
 	playerCommand
 	Target dcf.Optional[string] `cmd:"target"`
