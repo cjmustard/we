@@ -26,28 +26,74 @@ func withTx(t *testing.T, f func(tx *world.Tx)) {
 	<-w.Exec(f)
 }
 
-func TestBrushHistoryIsIsolatedFromMainHistory(t *testing.T) {
+func TestDefaultUndoRedoUsesMostRecentCommandOrBrushBatch(t *testing.T) {
 	withTx(t, func(tx *world.Tx) {
-		pos := cube.Pos{0, 0, 0}
+		mainPos := cube.Pos{0, 0, 0}
+		brushPos := cube.Pos{1, 0, 0}
 		h := history.NewHistory(10)
 		mainBatch := history.NewBatch(false)
-		mainBatch.SetBlock(tx, pos, mcblock.Stone{})
+		mainBatch.SetBlock(tx, mainPos, mcblock.Stone{})
 		h.Record(mainBatch)
 		brushBatch := history.NewBatch(true)
-		brushBatch.SetBlock(tx, pos, mcblock.Gold{})
+		brushBatch.SetBlock(tx, brushPos, mcblock.Gold{})
 		h.Record(brushBatch)
 
 		if !h.Undo(tx, false) {
-			t.Fatal("main undo returned false")
+			t.Fatal("default undo returned false")
 		}
-		if !parse.SameBlock(tx.Block(pos), mcblock.Air{}) {
-			t.Fatal("main undo did not skip brush stack and restore main before-state")
+		if !parse.SameBlock(tx.Block(brushPos), mcblock.Air{}) {
+			t.Fatal("default undo did not undo latest brush batch")
 		}
+		if !parse.SameBlock(tx.Block(mainPos), mcblock.Stone{}) {
+			t.Fatal("default undo changed older command batch first")
+		}
+		if !h.Undo(tx, false) {
+			t.Fatal("second default undo returned false")
+		}
+		if !parse.SameBlock(tx.Block(mainPos), mcblock.Air{}) {
+			t.Fatal("second default undo did not undo command batch")
+		}
+		if !h.Redo(tx, false) {
+			t.Fatal("default redo returned false")
+		}
+		if !parse.SameBlock(tx.Block(mainPos), mcblock.Stone{}) {
+			t.Fatal("default redo did not redo most recently undone command batch")
+		}
+		if !h.Redo(tx, false) {
+			t.Fatal("second default redo returned false")
+		}
+		if !parse.SameBlock(tx.Block(brushPos), mcblock.Gold{}) {
+			t.Fatal("second default redo did not redo brush batch")
+		}
+	})
+}
+
+func TestExplicitBrushUndoStillTargetsBrushStack(t *testing.T) {
+	withTx(t, func(tx *world.Tx) {
+		mainPos := cube.Pos{0, 0, 0}
+		brushPos := cube.Pos{1, 0, 0}
+		h := history.NewHistory(10)
+		brushBatch := history.NewBatch(true)
+		brushBatch.SetBlock(tx, brushPos, mcblock.Gold{})
+		h.Record(brushBatch)
+		mainBatch := history.NewBatch(false)
+		mainBatch.SetBlock(tx, mainPos, mcblock.Stone{})
+		h.Record(mainBatch)
+
 		if !h.Undo(tx, true) {
-			t.Fatal("brush undo returned false")
+			t.Fatal("explicit brush undo returned false")
 		}
-		if !parse.SameBlock(tx.Block(pos), mcblock.Stone{}) {
-			t.Fatal("brush undo did not restore brush before-state")
+		if !parse.SameBlock(tx.Block(brushPos), mcblock.Air{}) {
+			t.Fatal("explicit brush undo did not undo brush batch")
+		}
+		if !parse.SameBlock(tx.Block(mainPos), mcblock.Stone{}) {
+			t.Fatal("explicit brush undo changed command batch")
+		}
+		if !h.Redo(tx, true) {
+			t.Fatal("explicit brush redo returned false")
+		}
+		if !parse.SameBlock(tx.Block(brushPos), mcblock.Gold{}) {
+			t.Fatal("explicit brush redo did not redo brush batch")
 		}
 	})
 }

@@ -123,8 +123,8 @@ func Schematic(tx *world.Tx, s Session, origin cube.Pos, dir cube.Direction, sto
 	}
 }
 
-// Undo reverts the most recent batch on s's stack. If brush is true the brush
-// stack is used. Returns ErrNothingToUndo when the stack is empty.
+// Undo reverts the most recent batch. If brush is true, only the brush stack is
+// used. Otherwise the newest command or brush batch is undone.
 func Undo(tx *world.Tx, s Session, brush bool) error {
 	if !s.Undo(tx, brush) {
 		return ErrNothingToUndo
@@ -132,8 +132,9 @@ func Undo(tx *world.Tx, s Session, brush bool) error {
 	return nil
 }
 
-// Redo restores the most recently undone batch. If brush is true the brush stack
-// is used. Returns ErrNothingToRedo when the stack is empty.
+// Redo restores the most recently undone batch. If brush is true, only the
+// brush stack is used. Otherwise the latest undone command or brush batch is
+// redone.
 func Redo(tx *world.Tx, s Session, brush bool) error {
 	if !s.Redo(tx, brush) {
 		return ErrNothingToRedo
