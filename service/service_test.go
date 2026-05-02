@@ -253,6 +253,28 @@ func TestOverlayCanPlaceAboveSelectionMaxY(t *testing.T) {
 	}
 }
 
+func TestOverlayStillUsesSelectedColumnWhenHigherBlocksExist(t *testing.T) {
+	var changed int
+	var placedInSelection bool
+	var untouchedAbove bool
+	var err error
+	withTx(t, func(tx *world.Tx) {
+		s := newFakeSession(geo.NewArea(0, 0, 0, 0, 0, 0))
+		tx.SetBlock(cube.Pos{0, 0, 0}, mcblock.Dirt{}, nil)
+		tx.SetBlock(cube.Pos{0, 10, 0}, mcblock.Gold{}, nil)
+		result, overlayErr := service.Overlay(tx, s, "stone")
+		changed, err = result.Changed, overlayErr
+		placedInSelection = parse.SameBlock(tx.Block(cube.Pos{0, 1, 0}), mcblock.Stone{})
+		untouchedAbove = parse.SameBlock(tx.Block(cube.Pos{0, 10, 0}), mcblock.Gold{})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed != 1 || !placedInSelection || !untouchedAbove {
+		t.Fatalf("overlay changed=%d placed=%v untouchedAbove=%v, want selected placement only", changed, placedInSelection, untouchedAbove)
+	}
+}
+
 func TestRemoveAboveBelowAndNear(t *testing.T) {
 	var err error
 	var aboveAir, belowAir, nearAir, farKept bool

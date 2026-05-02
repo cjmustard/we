@@ -99,7 +99,7 @@ func Walls(tx *world.Tx, area geo.Area, blocks []world.Block, batch *history.Bat
 	batch.Grow(int(area.Volume()))
 	area.Range(func(x, y, z int) {
 		if x == area.Min[0] || x == area.Max[0] || y == area.Min[1] || y == area.Max[1] || z == area.Min[2] || z == area.Max[2] {
-			batch.SetBlock(tx, cube.Pos{x, y, z}, ChooseBlock(blocks, nil))
+			batch.SetBlockFast(tx, cube.Pos{x, y, z}, ChooseBlock(blocks, nil))
 		}
 	})
 }
@@ -110,7 +110,7 @@ func ReplaceArea(tx *world.Tx, area geo.Area, mask BlockMask, to []world.Block, 
 	area.Range(func(x, y, z int) {
 		pos := cube.Pos{x, y, z}
 		if mask.Match(tx.Block(pos)) {
-			batch.SetBlock(tx, pos, ChooseBlock(to, nil))
+			batch.SetBlockFast(tx, pos, ChooseBlock(to, nil))
 		}
 	})
 }
@@ -127,7 +127,7 @@ func ReplaceNear(tx *world.Tx, center cube.Pos, radius int, mask BlockMask, to [
 		}
 		pos := cube.Pos{x, y, z}
 		if mask.Match(tx.Block(pos)) {
-			batch.SetBlock(tx, pos, ChooseBlock(to, nil))
+			batch.SetBlockFast(tx, pos, ChooseBlock(to, nil))
 		}
 	})
 }
@@ -137,14 +137,14 @@ func TopLayer(tx *world.Tx, area geo.Area, mask BlockMask, to []world.Block, bat
 	batch.Grow(area.Dx() * area.Dz())
 	for x := area.Min[0]; x <= area.Max[0]; x++ {
 		for z := area.Min[2]; z <= area.Max[2]; z++ {
-			for y := area.Max[1]; y >= area.Min[1]; y-- {
+			for y := highestSelectionY(tx, area, x, z); y >= area.Min[1]; y-- {
 				pos := cube.Pos{x, y, z}
 				b := tx.Block(pos)
 				if parse.IsAir(b) {
 					continue
 				}
 				if mask.Match(b) {
-					batch.SetBlock(tx, pos, ChooseBlock(to, nil))
+					batch.SetBlockFast(tx, pos, ChooseBlock(to, nil))
 				}
 				break
 			}
@@ -157,14 +157,14 @@ func Overlay(tx *world.Tx, area geo.Area, blocks []world.Block, batch *history.B
 	batch.Grow(area.Dx() * area.Dz())
 	for x := area.Min[0]; x <= area.Max[0]; x++ {
 		for z := area.Min[2]; z <= area.Max[2]; z++ {
-			for y := area.Max[1]; y >= area.Min[1]; y-- {
+			for y := highestSelectionY(tx, area, x, z); y >= area.Min[1]; y-- {
 				pos := cube.Pos{x, y, z}
 				if parse.IsAir(tx.Block(pos)) {
 					continue
 				}
 				above := cube.Pos{x, y + 1, z}
 				if parse.IsAir(tx.Block(above)) {
-					batch.SetBlock(tx, above, ChooseBlock(blocks, nil))
+					batch.SetBlockFast(tx, above, ChooseBlock(blocks, nil))
 				}
 				break
 			}
@@ -184,7 +184,7 @@ func RemoveNear(tx *world.Tx, center cube.Pos, radius int, mask BlockMask, batch
 		}
 		pos := cube.Pos{x, y, z}
 		if mask.Match(tx.Block(pos)) {
-			batch.SetBlock(tx, pos, mcblock.Air{})
+			batch.SetBlockFast(tx, pos, mcblock.Air{})
 			batch.SetLiquid(tx, pos, nil)
 			return
 		}
@@ -200,18 +200,18 @@ func Naturalize(tx *world.Tx, area geo.Area, batch *history.Batch) {
 	for x := area.Min[0]; x <= area.Max[0]; x++ {
 		for z := area.Min[2]; z <= area.Max[2]; z++ {
 			depth := 0
-			for y := area.Max[1]; y >= area.Min[1]; y-- {
+			for y := highestSelectionY(tx, area, x, z); y >= area.Min[1]; y-- {
 				pos := cube.Pos{x, y, z}
 				if parse.IsAir(tx.Block(pos)) {
 					continue
 				}
 				switch {
 				case depth == 0:
-					batch.SetBlock(tx, pos, mcblock.Grass{})
+					batch.SetBlockFast(tx, pos, mcblock.Grass{})
 				case depth <= 3:
-					batch.SetBlock(tx, pos, mcblock.Dirt{})
+					batch.SetBlockFast(tx, pos, mcblock.Dirt{})
 				default:
-					batch.SetBlock(tx, pos, mcblock.Stone{})
+					batch.SetBlockFast(tx, pos, mcblock.Stone{})
 				}
 				depth++
 			}
@@ -231,7 +231,7 @@ func Drain(tx *world.Tx, center cube.Pos, radius int, batch *history.Batch) {
 		}
 		pos := cube.Pos{x, y, z}
 		if parse.IsFluidBlock(tx.Block(pos)) {
-			batch.SetBlock(tx, pos, mcblock.Air{})
+			batch.SetBlockFast(tx, pos, mcblock.Air{})
 		}
 		if liq, ok := tx.Liquid(pos); ok && parse.IsFluidBlock(liq) {
 			batch.SetLiquid(tx, pos, nil)
@@ -261,13 +261,16 @@ func copyArea(tx *world.Tx, area geo.Area, origin cube.Pos, mask BlockMask, incl
 }
 
 func pasteBuffer(tx *world.Tx, origin cube.Pos, entries []bufferEntry, noAir bool, batch *history.Batch) {
+	if !noAir && writeDenseBuffer(tx, origin, entries, batch) {
+		return
+	}
 	batch.Grow(len(entries))
 	for _, e := range entries {
 		if noAir && parse.IsAir(e.Block) && !e.HasLiq {
 			continue
 		}
 		pos := origin.Add(e.Offset)
-		batch.SetBlock(tx, pos, e.Block)
+		batch.SetBlockFast(tx, pos, e.Block)
 		if e.HasLiq {
 			batch.SetLiquid(tx, pos, e.Liquid)
 		} else {
@@ -305,10 +308,14 @@ func Move(tx *world.Tx, area geo.Area, dir cube.Pos, dist int, mask BlockMask, n
 		a, b := entries[i].Offset, entries[j].Offset
 		return a[0]*dir[0]+a[1]*dir[1]+a[2]*dir[2] > b[0]*dir[0]+b[1]*dir[1]+b[2]*dir[2]
 	})
-	for _, e := range entries {
-		src := area.Min.Add(e.Offset)
-		batch.SetBlock(tx, src, mcblock.Air{})
-		batch.SetLiquid(tx, src, nil)
+	if mask.All && mask.IncludeAir {
+		ClearArea(tx, area, batch)
+	} else {
+		for _, e := range entries {
+			src := area.Min.Add(e.Offset)
+			batch.SetBlockFast(tx, src, mcblock.Air{})
+			batch.SetLiquid(tx, src, nil)
+		}
 	}
 	dest := area.Min.Add(cube.Pos{dir[0] * dist, dir[1] * dist, dir[2] * dist})
 	pasteBuffer(tx, dest, entries, noAir, batch)
@@ -393,11 +400,15 @@ func Line(tx *world.Tx, start, end cube.Pos, thickness int, blocks []world.Block
 		for ox := minOffset; ox <= maxOffset; ox++ {
 			for oy := minOffset; oy <= maxOffset; oy++ {
 				for oz := minOffset; oz <= maxOffset; oz++ {
-					batch.SetBlock(tx, cube.Pos{x + ox, y + oy, z + oz}, ChooseBlock(blocks, nil))
+					batch.SetBlockFast(tx, cube.Pos{x + ox, y + oy, z + oz}, ChooseBlock(blocks, nil))
 				}
 			}
 		}
 	}
+}
+
+func highestSelectionY(tx *world.Tx, area geo.Area, x, z int) int {
+	return min(tx.HighestBlock(x, z), area.Max[1])
 }
 
 func abs(v int) int {

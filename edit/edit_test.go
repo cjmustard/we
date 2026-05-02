@@ -163,6 +163,56 @@ func TestClipboardPasteNoAirKeepsExistingBlocks(t *testing.T) {
 	})
 }
 
+func TestClipboardDensePastePreservesOffsetsLiquidsAndUndo(t *testing.T) {
+	var failure string
+	withTx(t, func(tx *world.Tx) {
+		source := geo.NewArea(-1, 0, 2, 0, 0, 2)
+		tx.SetBlock(cube.Pos{-1, 0, 2}, mcblock.Stone{}, nil)
+		tx.SetBlock(cube.Pos{0, 0, 2}, mcblock.Water{Depth: 8, Still: true}, nil)
+		tx.SetBlock(cube.Pos{9, 0, 0}, mcblock.Gold{}, nil)
+
+		cb := edit.CopySelection(tx, source, cube.Pos{0, 0, 0}, cube.North, edit.BlockMask{All: true, IncludeAir: true}, false)
+		h := history.NewHistory(10)
+		batch := history.NewBatch(false)
+		if err := edit.PasteClipboard(tx, cb, cube.Pos{10, 0, 0}, cube.North, false, batch); err != nil {
+			failure = fmt.Sprintf("PasteClipboard: %v", err)
+			return
+		}
+		if got := h.Record(batch); got != 1 {
+			failure = fmt.Sprintf("Record() = %d, want 1", got)
+			return
+		}
+		if !parse.SameBlock(tx.Block(cube.Pos{9, 0, 2}), mcblock.Stone{}) {
+			failure = "dense paste missed negative clipboard offset"
+			return
+		}
+		water := mcblock.Water{Depth: 8, Still: true}
+		liq, ok := tx.Liquid(cube.Pos{10, 0, 2})
+		if !parse.SameBlock(tx.Block(cube.Pos{10, 0, 2}), water) || !parse.SameLiquid(liq, ok, water, true) {
+			failure = "dense paste did not preserve liquid block"
+			return
+		}
+		if !h.Undo(tx, false) {
+			failure = "Undo returned false"
+			return
+		}
+		if !parse.SameBlock(tx.Block(cube.Pos{9, 0, 0}), mcblock.Gold{}) {
+			failure = "undo changed unrelated block"
+			return
+		}
+		if !parse.IsAir(tx.Block(cube.Pos{9, 0, 2})) || !parse.IsAir(tx.Block(cube.Pos{10, 0, 2})) {
+			failure = "undo did not clear pasted blocks"
+			return
+		}
+		if !h.Redo(tx, false) {
+			failure = "Redo returned false"
+		}
+	})
+	if failure != "" {
+		t.Fatal(failure)
+	}
+}
+
 func TestHollowCubeDoesNotOverwriteInterior(t *testing.T) {
 	withTx(t, func(tx *world.Tx) {
 		anchor := cube.Pos{0, 0, 0}

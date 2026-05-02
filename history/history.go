@@ -30,6 +30,8 @@ type Batch struct {
 	index   map[cube.Pos]int
 }
 
+var fastBlockSetOpts = &world.SetOpts{DisableBlockUpdates: true}
+
 // NewBatch creates a batch; brush batches go on the isolated brush undo stack.
 func NewBatch(brush bool) *Batch {
 	return &Batch{Brush: brush, index: map[cube.Pos]int{}}
@@ -71,13 +73,26 @@ func (b *Batch) ensure(tx *world.Tx, pos cube.Pos) int {
 // SetBlock records and writes a block. Passing nil writes air, matching
 // Dragonfly's SetBlock contract.
 func (b *Batch) SetBlock(tx *world.Tx, pos cube.Pos, block world.Block) {
+	b.setBlock(tx, pos, block, nil)
+}
+
+// SetBlockFast records and writes a block without scheduling neighbouring
+// block updates. Use it for WorldEdit-style bulk writes where the caller owns
+// the full edit operation and wants to avoid per-block physics/update fan-out.
+func (b *Batch) SetBlockFast(tx *world.Tx, pos cube.Pos, block world.Block) {
+	b.setBlock(tx, pos, block, fastBlockSetOpts)
+}
+
+func (b *Batch) setBlock(tx *world.Tx, pos cube.Pos, block world.Block, opts *world.SetOpts) {
 	i := b.ensure(tx, pos)
 	if liq, ok := block.(world.Liquid); ok {
-		tx.SetBlock(pos, nil, nil)
+		tx.SetBlock(pos, nil, opts)
 		tx.SetLiquid(pos, liq)
 	} else {
-		tx.SetBlock(pos, block, nil)
-		tx.SetLiquid(pos, nil)
+		tx.SetBlock(pos, block, opts)
+		if _, ok := tx.Liquid(pos); ok {
+			tx.SetLiquid(pos, nil)
+		}
 	}
 	b.changes[i].After = snapshotAt(tx, pos)
 }
@@ -154,10 +169,10 @@ func (b *Batch) SetAfterForIndex(tx *world.Tx, i int, pos cube.Pos) {
 }
 
 func applySnapshot(tx *world.Tx, pos cube.Pos, s snapshot) {
-	tx.SetBlock(pos, s.Block, nil)
+	tx.SetBlock(pos, s.Block, fastBlockSetOpts)
 	if s.HasLiq {
 		tx.SetLiquid(pos, s.Liquid)
-	} else {
+	} else if _, ok := tx.Liquid(pos); ok {
 		tx.SetLiquid(pos, nil)
 	}
 	if s.Biome != nil {
