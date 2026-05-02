@@ -19,6 +19,12 @@ type denseBlockEntry struct {
 	Liq   world.Liquid
 }
 
+type denseBuffer struct {
+	min     cube.Pos
+	dims    [3]int
+	ordered []bufferEntry
+}
+
 type denseBlockStructure struct {
 	d       [3]int
 	entries []denseBlockEntry
@@ -33,8 +39,8 @@ func (s denseBlockStructure) At(x, y, z int, _ func(x, y, z int) world.Block) (w
 
 // writeDenseArea applies a full cuboid through Dragonfly's chunk-batched
 // BuildStructure path. It snapshots every position before the structure write
-// and refreshes after snapshots afterwards so undo/redo behavior stays identical
-// to repeated Batch.SetBlock calls.
+// and records the known after snapshots so undo/redo behavior stays identical
+// to repeated Batch.SetBlock calls without re-reading the world after writing.
 func writeDenseArea(tx *world.Tx, area geo.Area, blockAt func(cube.Pos) world.Block, batch *history.Batch) {
 	n := int(area.Volume())
 	batch.Grow(n)
@@ -49,8 +55,14 @@ func writeDenseArea(tx *world.Tx, area geo.Area, blockAt func(cube.Pos) world.Bl
 		entries = append(entries, denseBlockEntry{Pos: pos, Index: batch.EnsurePos(tx, pos), Block: block, Liq: liq})
 	})
 	tx.BuildStructure(area.Min, denseBlockStructure{d: [3]int{area.Dx(), area.Dy(), area.Dz()}, entries: entries})
+	worldRange := tx.Range()
 	for _, entry := range entries {
-		batch.SetAfterForIndex(tx, entry.Index, entry.Pos)
+		if entry.Pos.OutOfBounds(worldRange) {
+			batch.SetAfterForIndex(tx, entry.Index, entry.Pos)
+			continue
+		}
+		liq, hasLiq := knownDenseLiquid(entry.Block, entry.Liq)
+		batch.SetAfterKnownForIndex(entry.Index, entry.Block, liq, hasLiq)
 	}
 }
 
@@ -58,28 +70,47 @@ func writeDenseArea(tx *world.Tx, area geo.Area, blockAt func(cube.Pos) world.Bl
 // through BuildStructure. It returns false when entries are sparse or have
 // duplicate offsets, in which case callers should fall back to SetBlock writes.
 func writeDenseBuffer(tx *world.Tx, origin cube.Pos, entries []bufferEntry, batch *history.Batch) bool {
-	min, dims, ordered, ok := denseBufferLayout(entries)
+	layout, ok := makeDenseBuffer(entries)
 	if !ok {
 		return false
 	}
-	n := len(ordered)
+	writeDenseBufferLayout(tx, origin, layout, batch)
+	return true
+}
+
+func writeDenseBufferLayout(tx *world.Tx, origin cube.Pos, layout denseBuffer, batch *history.Batch) {
+	writeDenseBufferLayoutScratch(tx, origin, layout, batch, nil)
+}
+
+func writeDenseBufferLayoutScratch(tx *world.Tx, origin cube.Pos, layout denseBuffer, batch *history.Batch, denseEntries []denseBlockEntry) []denseBlockEntry {
+	n := len(layout.ordered)
 	batch.Grow(n)
-	denseEntries := make([]denseBlockEntry, n)
-	for i, entry := range ordered {
+	if cap(denseEntries) < n {
+		denseEntries = make([]denseBlockEntry, n)
+	} else {
+		denseEntries = denseEntries[:n]
+	}
+	for i, entry := range layout.ordered {
 		pos := origin.Add(entry.Offset)
 		block, liq := structureLayers(entry)
 		denseEntries[i] = denseBlockEntry{Pos: pos, Index: batch.EnsurePos(tx, pos), Block: block, Liq: liq}
 	}
-	tx.BuildStructure(origin.Add(min), denseBlockStructure{d: dims, entries: denseEntries})
+	tx.BuildStructure(origin.Add(layout.min), denseBlockStructure{d: layout.dims, entries: denseEntries})
+	worldRange := tx.Range()
 	for _, entry := range denseEntries {
-		batch.SetAfterForIndex(tx, entry.Index, entry.Pos)
+		if entry.Pos.OutOfBounds(worldRange) {
+			batch.SetAfterForIndex(tx, entry.Index, entry.Pos)
+			continue
+		}
+		liq, hasLiq := knownDenseLiquid(entry.Block, entry.Liq)
+		batch.SetAfterKnownForIndex(entry.Index, entry.Block, liq, hasLiq)
 	}
-	return true
+	return denseEntries
 }
 
-func denseBufferLayout(entries []bufferEntry) (cube.Pos, [3]int, []bufferEntry, bool) {
+func makeDenseBuffer(entries []bufferEntry) (denseBuffer, bool) {
 	if len(entries) == 0 {
-		return cube.Pos{}, [3]int{}, nil, false
+		return denseBuffer{}, false
 	}
 	lo, hi := entries[0].Offset, entries[0].Offset
 	for _, entry := range entries[1:] {
@@ -89,19 +120,19 @@ func denseBufferLayout(entries []bufferEntry) (cube.Pos, [3]int, []bufferEntry, 
 	dims := [3]int{hi[0] - lo[0] + 1, hi[1] - lo[1] + 1, hi[2] - lo[2] + 1}
 	volume := dims[0] * dims[1] * dims[2]
 	if volume != len(entries) {
-		return cube.Pos{}, [3]int{}, nil, false
+		return denseBuffer{}, false
 	}
 	ordered := make([]bufferEntry, volume)
 	seen := make([]bool, volume)
 	for _, entry := range entries {
 		i := denseIndex(entry.Offset, lo, dims)
 		if seen[i] {
-			return cube.Pos{}, [3]int{}, nil, false
+			return denseBuffer{}, false
 		}
 		seen[i] = true
 		ordered[i] = entry
 	}
-	return lo, dims, ordered, true
+	return denseBuffer{min: lo, dims: dims, ordered: ordered}, true
 }
 
 func denseIndex(pos, min cube.Pos, dims [3]int) int {
@@ -124,4 +155,14 @@ func structureLayers(entry bufferEntry) (world.Block, world.Liquid) {
 		return entry.Liquid, nil
 	}
 	return block, entry.Liquid
+}
+
+func knownDenseLiquid(block world.Block, liq world.Liquid) (world.Liquid, bool) {
+	if liq != nil {
+		return liq, true
+	}
+	if l, ok := block.(world.Liquid); ok {
+		return l, true
+	}
+	return nil, false
 }

@@ -44,8 +44,8 @@ func TestFillUndoRedoBatch(t *testing.T) {
 		h := history.NewHistory(10)
 		batch := history.NewBatch(false)
 		edit.FillArea(tx, area, []world.Block{mcblock.Stone{}}, batch)
-		if got := h.Record(batch); got != 1 {
-			t.Fatalf("Record() = %d, want 1", got)
+		if got := h.Record(batch); got != 4 {
+			t.Fatalf("Record() = %d, want 4", got)
 		}
 		area.Range(func(x, y, z int) {
 			if !parse.SameBlock(tx.Block(cube.Pos{x, y, z}), mcblock.Stone{}) {
@@ -178,8 +178,8 @@ func TestClipboardDensePastePreservesOffsetsLiquidsAndUndo(t *testing.T) {
 			failure = fmt.Sprintf("PasteClipboard: %v", err)
 			return
 		}
-		if got := h.Record(batch); got != 1 {
-			failure = fmt.Sprintf("Record() = %d, want 1", got)
+		if got := h.Record(batch); got != 2 {
+			failure = fmt.Sprintf("Record() = %d, want 2", got)
 			return
 		}
 		if !parse.SameBlock(tx.Block(cube.Pos{9, 0, 2}), mcblock.Stone{}) {
@@ -299,6 +299,40 @@ func TestReplaceMaskCanExplicitlyTargetAir(t *testing.T) {
 		}
 		if !parse.SameBlock(tx.Block(cube.Pos{1, 0, 0}), mcblock.Dirt{}) {
 			t.Fatal("explicit air mask replaced non-air")
+		}
+	})
+}
+
+func TestPreparedBlockMaskMatchesByKeyAndExplicitAir(t *testing.T) {
+	mask := edit.BlockMask{Blocks: []world.Block{mcblock.Stone{}, mcblock.Air{}}}.Prepared()
+	if !mask.Match(mcblock.Stone{}) {
+		t.Fatal("prepared mask did not match listed stone")
+	}
+	if !mask.Match(mcblock.Air{}) {
+		t.Fatal("prepared mask did not match explicitly listed air")
+	}
+	if mask.Match(mcblock.Dirt{}) {
+		t.Fatal("prepared mask matched unlisted dirt")
+	}
+}
+
+func TestMoveOverlappingSelectionUsesOriginalSnapshot(t *testing.T) {
+	withTx(t, func(tx *world.Tx) {
+		area := geo.NewArea(0, 0, 0, 1, 0, 0)
+		tx.SetBlock(cube.Pos{0, 0, 0}, mcblock.Stone{}, nil)
+		tx.SetBlock(cube.Pos{1, 0, 0}, mcblock.Dirt{}, nil)
+
+		batch := history.NewBatch(false)
+		edit.Move(tx, area, cube.Pos{1, 0, 0}, 1, edit.BlockMask{All: true, IncludeAir: true}, false, batch)
+
+		if !parse.IsAir(tx.Block(cube.Pos{0, 0, 0})) {
+			t.Fatal("overlapping move did not clear original leading edge")
+		}
+		if !parse.SameBlock(tx.Block(cube.Pos{1, 0, 0}), mcblock.Stone{}) {
+			t.Fatal("overlapping move did not paste original first block")
+		}
+		if !parse.SameBlock(tx.Block(cube.Pos{2, 0, 0}), mcblock.Dirt{}) {
+			t.Fatal("overlapping move did not paste original second block")
 		}
 	})
 }

@@ -53,11 +53,17 @@ func (b *Batch) Grow(n int) {
 
 func snapshotAt(tx *world.Tx, pos cube.Pos) snapshot {
 	liq, ok := tx.Liquid(pos)
-	return snapshot{Block: tx.Block(pos), Liquid: liq, HasLiq: ok, Biome: tx.Biome(pos)}
+	return newSnapshot(tx.Block(pos), liq, ok, tx.Biome(pos))
+}
+
+func newSnapshot(block world.Block, liquid world.Liquid, hasLiq bool, biome world.Biome) snapshot {
+	return snapshot{Block: block, Liquid: liquid, HasLiq: hasLiq, Biome: biome}
 }
 
 func sameSnapshot(a, b snapshot) bool {
-	return parse.SameBlock(a.Block, b.Block) && parse.SameLiquid(a.Liquid, a.HasLiq, b.Liquid, b.HasLiq) && parse.SameBiome(a.Biome, b.Biome)
+	return parse.SameBlock(a.Block, b.Block) &&
+		parse.SameLiquid(a.Liquid, a.HasLiq, b.Liquid, b.HasLiq) &&
+		parse.SameBiome(a.Biome, b.Biome)
 }
 
 func (b *Batch) ensure(tx *world.Tx, pos cube.Pos) int {
@@ -125,14 +131,14 @@ func (b *Batch) Len() int {
 	return n
 }
 
-func (b *Batch) compact() Batch {
-	out := Batch{Brush: b.Brush}
+func (b *Batch) compact() (Batch, int) {
+	out := Batch{Brush: b.Brush, changes: make([]Change, 0, len(b.changes))}
 	for _, c := range b.changes {
 		if !sameSnapshot(c.Before, c.After) {
 			out.changes = append(out.changes, c)
 		}
 	}
-	return out
+	return out, len(out.changes)
 }
 
 // BlockSnapshot is exported world state at a position (for brush displacement).
@@ -144,7 +150,7 @@ type BlockSnapshot struct {
 }
 
 func snapToInternal(s BlockSnapshot) snapshot {
-	return snapshot(s)
+	return newSnapshot(s.Block, s.Liquid, s.HasLiq, s.Biome)
 }
 
 // SnapshotAtBlock captures current state for undo-aware brush operations.
@@ -166,6 +172,12 @@ func (b *Batch) EnsurePos(tx *world.Tx, pos cube.Pos) int {
 // SetAfterForIndex refreshes the "after" snapshot for a change index (after world writes).
 func (b *Batch) SetAfterForIndex(tx *world.Tx, i int, pos cube.Pos) {
 	b.changes[i].After = snapshotAt(tx, pos)
+}
+
+// SetAfterKnownForIndex sets the "after" snapshot when the caller already
+// knows the post-write block/liquid state, avoiding an extra world read.
+func (b *Batch) SetAfterKnownForIndex(i int, block world.Block, liq world.Liquid, hasLiq bool) {
+	b.changes[i].After = newSnapshot(block, liq, hasLiq, b.changes[i].Before.Biome)
 }
 
 func applySnapshot(tx *world.Tx, pos cube.Pos, s snapshot) {
@@ -211,20 +223,23 @@ func NewHistory(limit int) *History {
 	return &History{limit: limit}
 }
 
-// Record stores a compacted batch; returns new stack depth for feedback.
+// Record stores a compacted batch and returns the number of changed positions.
 func (h *History) Record(batch *Batch) int {
-	if batch == nil || batch.Len() == 0 {
+	if batch == nil {
 		return 0
 	}
-	b := batch.compact()
+	b, changed := batch.compact()
+	if changed == 0 {
+		return 0
+	}
 	if b.Brush {
 		h.brushUndo = appendLimited(h.brushUndo, b, h.limit)
 		h.brushRedo = nil
-		return len(h.brushUndo)
+		return changed
 	}
 	h.undo = appendLimited(h.undo, b, h.limit)
 	h.redo = nil
-	return len(h.undo)
+	return changed
 }
 
 func appendLimited(stack []Batch, b Batch, limit int) []Batch {

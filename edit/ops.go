@@ -3,7 +3,6 @@ package edit
 import (
 	"math"
 	"math/rand"
-	"sort"
 	"strings"
 
 	mcblock "github.com/df-mc/dragonfly/server/block"
@@ -22,6 +21,9 @@ type BlockMask struct {
 	All        bool
 	IncludeAir bool
 	Blocks     []world.Block
+
+	keys      map[parse.BlockKey]struct{}
+	airListed bool
 }
 
 // Match reports whether b satisfies the mask.
@@ -33,6 +35,9 @@ func (m BlockMask) Match(b world.Block) bool {
 		return !parse.IsAir(b)
 	}
 	if parse.IsAir(b) && !m.IncludeAir {
+		if m.keys != nil {
+			return m.airListed
+		}
 		for _, want := range m.Blocks {
 			if parse.IsAir(want) {
 				return true
@@ -40,12 +45,32 @@ func (m BlockMask) Match(b world.Block) bool {
 		}
 		return false
 	}
+	if m.keys != nil {
+		_, ok := m.keys[parse.BlockKeyOf(b)]
+		return ok
+	}
 	for _, want := range m.Blocks {
 		if parse.SameBlock(b, want) {
 			return true
 		}
 	}
 	return false
+}
+
+// Prepared returns a copy of m with explicit block matches indexed for hot
+// loops. Blocks remains intact for API compatibility and diagnostics.
+func (m BlockMask) Prepared() BlockMask {
+	if m.All || len(m.Blocks) == 0 || m.keys != nil {
+		return m
+	}
+	m.keys = make(map[parse.BlockKey]struct{}, len(m.Blocks))
+	for _, b := range m.Blocks {
+		if parse.IsAir(b) {
+			m.airListed = true
+		}
+		m.keys[parse.BlockKeyOf(b)] = struct{}{}
+	}
+	return m
 }
 
 // ParseMask parses a mask spec like "all" or "only:stone,dirt" into a BlockMask.
@@ -56,7 +81,7 @@ func ParseMask(spec string) (BlockMask, error) {
 	}
 	spec = strings.TrimPrefix(spec, "only:")
 	blocks, err := parse.ParseBlockList(spec)
-	return BlockMask{Blocks: blocks}, err
+	return BlockMask{Blocks: blocks}.Prepared(), err
 }
 
 // ChooseBlock picks one block from a list using r.
@@ -106,6 +131,7 @@ func Walls(tx *world.Tx, area geo.Area, blocks []world.Block, batch *history.Bat
 
 // ReplaceArea swaps blocks matching mask inside area for picks from to.
 func ReplaceArea(tx *world.Tx, area geo.Area, mask BlockMask, to []world.Block, batch *history.Batch) {
+	mask = mask.Prepared()
 	batch.Grow(int(area.Volume()))
 	area.Range(func(x, y, z int) {
 		pos := cube.Pos{x, y, z}
@@ -117,6 +143,7 @@ func ReplaceArea(tx *world.Tx, area geo.Area, mask BlockMask, to []world.Block, 
 
 // ReplaceNear runs ReplaceArea inside a sphere of the given radius around center.
 func ReplaceNear(tx *world.Tx, center cube.Pos, radius int, mask BlockMask, to []world.Block, batch *history.Batch) {
+	mask = mask.Prepared()
 	r2 := radius * radius
 	area := geo.NewArea(center[0]-radius, center[1]-radius, center[2]-radius, center[0]+radius, center[1]+radius, center[2]+radius)
 	batch.Grow(int(area.Volume()))
@@ -134,6 +161,7 @@ func ReplaceNear(tx *world.Tx, center cube.Pos, radius int, mask BlockMask, to [
 
 // TopLayer replaces only the topmost matching block in each (x, z) column of area.
 func TopLayer(tx *world.Tx, area geo.Area, mask BlockMask, to []world.Block, batch *history.Batch) {
+	mask = mask.Prepared()
 	batch.Grow(area.Dx() * area.Dz())
 	for x := area.Min[0]; x <= area.Max[0]; x++ {
 		for z := area.Min[2]; z <= area.Max[2]; z++ {
@@ -174,6 +202,7 @@ func Overlay(tx *world.Tx, area geo.Area, blocks []world.Block, batch *history.B
 
 // RemoveNear clears blocks matching mask within a sphere around center.
 func RemoveNear(tx *world.Tx, center cube.Pos, radius int, mask BlockMask, batch *history.Batch) {
+	mask = mask.Prepared()
 	r2 := radius * radius
 	area := geo.NewArea(center[0]-radius, center[1]-radius, center[2]-radius, center[0]+radius, center[1]+radius, center[2]+radius)
 	batch.Grow(int(area.Volume()))
@@ -247,6 +276,7 @@ type bufferEntry struct {
 }
 
 func copyArea(tx *world.Tx, area geo.Area, origin cube.Pos, mask BlockMask, includeAll bool) []bufferEntry {
+	mask = mask.Prepared()
 	out := make([]bufferEntry, 0, area.Dx()*area.Dy()*area.Dz())
 	area.Range(func(x, y, z int) {
 		pos := cube.Pos{x, y, z}
@@ -304,10 +334,6 @@ func DirectionVector(face cube.Face) cube.Pos {
 func Move(tx *world.Tx, area geo.Area, dir cube.Pos, dist int, mask BlockMask, noAir bool, batch *history.Batch) {
 	entries := copyArea(tx, area, area.Min, mask, mask.All)
 	batch.Grow(len(entries) * 2)
-	sort.Slice(entries, func(i, j int) bool {
-		a, b := entries[i].Offset, entries[j].Offset
-		return a[0]*dir[0]+a[1]*dir[1]+a[2]*dir[2] > b[0]*dir[0]+b[1]*dir[1]+b[2]*dir[2]
-	})
 	if mask.All && mask.IncludeAir {
 		ClearArea(tx, area, batch)
 	} else {
@@ -324,6 +350,12 @@ func Move(tx *world.Tx, area geo.Area, dir cube.Pos, dist int, mask BlockMask, n
 // Stack repeats area amount times along dir, advancing one full area-length per copy.
 func Stack(tx *world.Tx, area geo.Area, dir cube.Pos, amount int, noAir bool, batch *history.Batch) {
 	entries := copyArea(tx, area, area.Min, BlockMask{All: true, IncludeAir: true}, true)
+	var layout denseBuffer
+	dense := false
+	if !noAir {
+		layout, dense = makeDenseBuffer(entries)
+	}
+	batch.Grow(len(entries) * amount)
 	step := cube.Pos{dir[0] * area.Dx(), dir[1] * area.Dy(), dir[2] * area.Dz()}
 	if dir[0] != 0 {
 		step = cube.Pos{dir[0] * area.Dx(), 0, 0}
@@ -332,8 +364,13 @@ func Stack(tx *world.Tx, area geo.Area, dir cube.Pos, amount int, noAir bool, ba
 	} else if dir[2] != 0 {
 		step = cube.Pos{0, 0, dir[2] * area.Dz()}
 	}
+	var denseEntries []denseBlockEntry
 	for i := 1; i <= amount; i++ {
 		dest := area.Min.Add(cube.Pos{step[0] * i, step[1] * i, step[2] * i})
+		if dense {
+			denseEntries = writeDenseBufferLayoutScratch(tx, dest, layout, batch, denseEntries)
+			continue
+		}
 		pasteBuffer(tx, dest, entries, noAir, batch)
 	}
 }

@@ -51,3 +51,25 @@ func TestBrushHistoryIsIsolatedFromMainHistory(t *testing.T) {
 		}
 	})
 }
+
+func TestRecordReturnsChangedCountAndSkipsNoOps(t *testing.T) {
+	var failure string
+	withTx(t, func(tx *world.Tx) {
+		h := history.NewHistory(10)
+		batch := history.NewBatch(false)
+		batch.SetBlock(tx, cube.Pos{0, 0, 0}, mcblock.Stone{})
+		batch.SetBlock(tx, cube.Pos{1, 0, 0}, mcblock.Dirt{})
+		batch.SetBlock(tx, cube.Pos{2, 0, 0}, mcblock.Air{})
+
+		if got := h.Record(batch); got != 2 {
+			failure = "Record() changed count mismatch"
+			return
+		}
+		if got := h.Record(history.NewBatch(false)); got != 0 {
+			failure = "Record() stored empty batch"
+		}
+	})
+	if failure != "" {
+		t.Fatal(failure)
+	}
+}

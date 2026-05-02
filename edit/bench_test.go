@@ -87,6 +87,31 @@ func BenchmarkPasteClipboard(b *testing.B) {
 	}
 }
 
+func BenchmarkReplaceAreaMask(b *testing.B) {
+	w := newBenchWorld(b)
+	area := geo.NewArea(0, 0, 0, 15, 7, 15)
+	execBenchTx(b, w, func(tx *world.Tx) {
+		area.Range(func(x, y, z int) {
+			block := world.Block(mcblock.Stone{})
+			if (x+y+z)%3 == 0 {
+				block = mcblock.Dirt{}
+			}
+			tx.SetBlock(cube.Pos{x, y, z}, block, nil)
+		})
+	})
+	mask := edit.BlockMask{Blocks: []world.Block{mcblock.Stone{}, mcblock.Dirt{}}}
+	to := []world.Block{mcblock.Gold{}}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		execBenchTx(b, w, func(tx *world.Tx) {
+			batch := history.NewBatch(false)
+			edit.ReplaceArea(tx, area, mask, to, batch)
+		})
+	}
+}
+
 func BenchmarkStack(b *testing.B) {
 	w := newBenchWorld(b)
 	area := geo.NewArea(0, 0, 0, 7, 3, 7)
