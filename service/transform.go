@@ -7,12 +7,16 @@ import (
 	"github.com/df-mc/dragonfly/server/block/cube"
 	"github.com/df-mc/dragonfly/server/world"
 	"github.com/df-mc/we/edit"
-	"github.com/df-mc/we/history"
 )
 
 // Move shifts blocks matching args[0] by args[1] along dir. The "-a" flag skips
 // writing air at the destination.
 func Move(tx *world.Tx, s Session, dir cube.Pos, args []string) (ChangeResult, error) {
+	args, opts := ParseEditOptions(args)
+	return MoveWithOptions(tx, s, dir, args, opts)
+}
+
+func MoveWithOptions(tx *world.Tx, s Session, dir cube.Pos, args []string, opts EditOptions) (ChangeResult, error) {
 	if len(args) < 2 {
 		return ChangeResult{}, fmt.Errorf("usage: //move <all|only:types> <distance> [-a]")
 	}
@@ -28,13 +32,18 @@ func Move(tx *world.Tx, s Session, dir cube.Pos, args []string) (ChangeResult, e
 	if err != nil {
 		return ChangeResult{}, err
 	}
-	batch := history.NewBatch(false)
+	batch := historyBatch(opts)
 	edit.Move(tx, area, dir, dist, mask, HasFlag(args[2:], "-a"), batch)
-	return record(s, batch), nil
+	return finishEdit(s, batch, int(area.Volume())*2), nil
 }
 
 // Stack repeats the selection args[0] times along dir.
 func Stack(tx *world.Tx, s Session, dir cube.Pos, args []string) (ChangeResult, error) {
+	args, opts := ParseEditOptions(args)
+	return StackWithOptions(tx, s, dir, args, opts)
+}
+
+func StackWithOptions(tx *world.Tx, s Session, dir cube.Pos, args []string, opts EditOptions) (ChangeResult, error) {
 	if len(args) < 1 {
 		return ChangeResult{}, fmt.Errorf("usage: //stack <amount> [-a]")
 	}
@@ -49,9 +58,9 @@ func Stack(tx *world.Tx, s Session, dir cube.Pos, args []string) (ChangeResult, 
 	if err != nil {
 		return ChangeResult{}, err
 	}
-	batch := history.NewBatch(false)
+	batch := historyBatch(opts)
 	edit.Stack(tx, area, dir, amount, HasFlag(args[1:], "-a"), batch)
-	return record(s, batch), nil
+	return finishEdit(s, batch, int(area.Volume())*amount), nil
 }
 
 // Rotate rotates the clipboard by args[0] degrees (90, 180, 270, or 360)
