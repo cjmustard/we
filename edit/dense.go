@@ -37,6 +37,47 @@ func (s denseBlockStructure) At(x, y, z int, _ func(x, y, z int) world.Block) (w
 	return entry.Block, entry.Liq
 }
 
+type uniformBlockStructure struct {
+	d     [3]int
+	block world.Block
+	liq   world.Liquid
+}
+
+func (s uniformBlockStructure) Dimensions() [3]int { return s.d }
+
+func (s uniformBlockStructure) At(_, _, _ int, _ func(x, y, z int) world.Block) (world.Block, world.Liquid) {
+	return s.block, s.liq
+}
+
+func writeUniformArea(tx *world.Tx, area geo.Area, block world.Block, batch *history.Batch) {
+	if block == nil {
+		block = mcblock.Air{}
+	}
+	liq, hasLiq := knownDenseLiquid(block, nil)
+	n := int(area.Volume())
+	batch.Grow(n)
+	appendHistory := batch.Empty()
+	worldRange := tx.Range()
+	var outOfBounds []denseBlockEntry
+	area.Range(func(x, y, z int) {
+		pos := cube.Pos{x, y, z}
+		if appendHistory && !pos.OutOfBounds(worldRange) {
+			batch.AppendKnownUnique(tx, pos, block, liq, hasLiq)
+			return
+		}
+		index := batch.EnsurePos(tx, pos)
+		if pos.OutOfBounds(worldRange) {
+			outOfBounds = append(outOfBounds, denseBlockEntry{Pos: pos, Index: index})
+			return
+		}
+		batch.SetAfterKnownForIndex(index, block, liq, hasLiq)
+	})
+	tx.BuildStructure(area.Min, uniformBlockStructure{d: [3]int{area.Dx(), area.Dy(), area.Dz()}, block: block})
+	for _, entry := range outOfBounds {
+		batch.SetAfterForIndex(tx, entry.Index, entry.Pos)
+	}
+}
+
 // writeDenseArea applies a full cuboid through Dragonfly's chunk-batched
 // BuildStructure path. It snapshots every position before the structure write
 // and records the known after snapshots so undo/redo behavior stays identical
@@ -45,6 +86,7 @@ func writeDenseArea(tx *world.Tx, area geo.Area, blockAt func(cube.Pos) world.Bl
 	n := int(area.Volume())
 	batch.Grow(n)
 	entries := make([]denseBlockEntry, 0, n)
+	appendHistory := batch.Empty()
 	area.Range(func(x, y, z int) {
 		pos := cube.Pos{x, y, z}
 		block := blockAt(pos)
@@ -52,17 +94,32 @@ func writeDenseArea(tx *world.Tx, area geo.Area, blockAt func(cube.Pos) world.Bl
 		if block == nil {
 			block = mcblock.Air{}
 		}
-		entries = append(entries, denseBlockEntry{Pos: pos, Index: batch.EnsurePos(tx, pos), Block: block, Liq: liq})
+		index := -1
+		if !appendHistory {
+			index = batch.EnsurePos(tx, pos)
+		}
+		entries = append(entries, denseBlockEntry{Pos: pos, Index: index, Block: block, Liq: liq})
 	})
-	tx.BuildStructure(area.Min, denseBlockStructure{d: [3]int{area.Dx(), area.Dy(), area.Dz()}, entries: entries})
 	worldRange := tx.Range()
+	for i := range entries {
+		entry := &entries[i]
+		liq, hasLiq := knownDenseLiquid(entry.Block, entry.Liq)
+		if appendHistory && !entry.Pos.OutOfBounds(worldRange) {
+			batch.AppendKnownUnique(tx, entry.Pos, entry.Block, liq, hasLiq)
+			continue
+		}
+		if entry.Index < 0 {
+			entry.Index = batch.EnsurePos(tx, entry.Pos)
+		}
+		if !entry.Pos.OutOfBounds(worldRange) {
+			batch.SetAfterKnownForIndex(entry.Index, entry.Block, liq, hasLiq)
+		}
+	}
+	tx.BuildStructure(area.Min, denseBlockStructure{d: [3]int{area.Dx(), area.Dy(), area.Dz()}, entries: entries})
 	for _, entry := range entries {
 		if entry.Pos.OutOfBounds(worldRange) {
 			batch.SetAfterForIndex(tx, entry.Index, entry.Pos)
-			continue
 		}
-		liq, hasLiq := knownDenseLiquid(entry.Block, entry.Liq)
-		batch.SetAfterKnownForIndex(entry.Index, entry.Block, liq, hasLiq)
 	}
 }
 
@@ -90,20 +147,36 @@ func writeDenseBufferLayoutScratch(tx *world.Tx, origin cube.Pos, layout denseBu
 	} else {
 		denseEntries = denseEntries[:n]
 	}
+	appendHistory := batch.Empty()
 	for i, entry := range layout.ordered {
 		pos := origin.Add(entry.Offset)
 		block, liq := structureLayers(entry)
-		denseEntries[i] = denseBlockEntry{Pos: pos, Index: batch.EnsurePos(tx, pos), Block: block, Liq: liq}
+		index := -1
+		if !appendHistory {
+			index = batch.EnsurePos(tx, pos)
+		}
+		denseEntries[i] = denseBlockEntry{Pos: pos, Index: index, Block: block, Liq: liq}
+	}
+	worldRange := tx.Range()
+	for i := range denseEntries {
+		entry := &denseEntries[i]
+		liq, hasLiq := knownDenseLiquid(entry.Block, entry.Liq)
+		if appendHistory && !entry.Pos.OutOfBounds(worldRange) {
+			batch.AppendKnownUnique(tx, entry.Pos, entry.Block, liq, hasLiq)
+			continue
+		}
+		if entry.Index < 0 {
+			entry.Index = batch.EnsurePos(tx, entry.Pos)
+		}
+		if !entry.Pos.OutOfBounds(worldRange) {
+			batch.SetAfterKnownForIndex(entry.Index, entry.Block, liq, hasLiq)
+		}
 	}
 	tx.BuildStructure(origin.Add(layout.min), denseBlockStructure{d: layout.dims, entries: denseEntries})
-	worldRange := tx.Range()
 	for _, entry := range denseEntries {
 		if entry.Pos.OutOfBounds(worldRange) {
 			batch.SetAfterForIndex(tx, entry.Index, entry.Pos)
-			continue
 		}
-		liq, hasLiq := knownDenseLiquid(entry.Block, entry.Liq)
-		batch.SetAfterKnownForIndex(entry.Index, entry.Block, liq, hasLiq)
 	}
 	return denseEntries
 }
@@ -121,6 +194,16 @@ func makeDenseBuffer(entries []bufferEntry) (denseBuffer, bool) {
 	volume := dims[0] * dims[1] * dims[2]
 	if volume != len(entries) {
 		return denseBuffer{}, false
+	}
+	inOrder := true
+	for i, entry := range entries {
+		if denseIndex(entry.Offset, lo, dims) != i {
+			inOrder = false
+			break
+		}
+	}
+	if inOrder {
+		return denseBuffer{min: lo, dims: dims, ordered: entries}, true
 	}
 	ordered := make([]bufferEntry, volume)
 	seen := make([]bool, volume)
