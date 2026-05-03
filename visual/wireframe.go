@@ -21,9 +21,21 @@ func LineSegment(start, end mgl64.Vec3) Segment {
 // Wireframe manages a reusable set of debug lines. It is the generic visual
 // primitive for selection outlines, paste previews, and other predicted shapes:
 // callers provide whatever segments describe the thing they want to preview.
+//
+// A Wireframe must not be copied after first use.
 type Wireframe struct {
-	mu    sync.Mutex
-	lines []*debug.Line
+	mu           sync.Mutex
+	lines        []*debug.Line
+	asyncMu      sync.Mutex
+	asyncOp      *wireframeOp
+	asyncRunning bool
+}
+
+type wireframeOp struct {
+	renderer debug.Renderer
+	segments []Segment
+	colour   color.RGBA
+	remove   bool
 }
 
 // Draw draws or updates the wireframe on r. If fewer segments are supplied than
@@ -35,14 +47,21 @@ func (w *Wireframe) Draw(r debug.Renderer, segments []Segment, colour color.RGBA
 	w.drawLocked(r, segments, colour)
 }
 
-func (w *Wireframe) drawLocked(r debug.Renderer, segments []Segment, colour color.RGBA) {
-	w.removeExtra(r, len(segments))
+// DrawAsync draws or updates the wireframe without blocking the caller on the
+// renderer. Calls are coalesced through one ephemeral worker goroutine per
+// Wireframe, so only the latest pending draw/remove is kept while a renderer is
+// blocked. The renderer must remain valid until the worker drains. The caller
+// may reuse or mutate segments after this returns.
+func (w *Wireframe) DrawAsync(r debug.Renderer, segments []Segment, colour color.RGBA) {
+	segments = append([]Segment(nil), segments...)
+	w.enqueue(wireframeOp{renderer: r, segments: segments, colour: colour})
+}
 
-	for i, segment := range segments {
-		line := w.line(i)
-		line.Colour = colour
-		line.Position = segment.Start
-		line.EndPosition = segment.End
+func (w *Wireframe) drawLocked(r debug.Renderer, segments []Segment, colour color.RGBA) {
+	w.removeLocked(r)
+	for _, segment := range segments {
+		line := &debug.Line{Colour: colour, Position: segment.Start, EndPosition: segment.End}
+		w.lines = append(w.lines, line)
 		r.AddDebugShape(line)
 	}
 }
@@ -56,23 +75,50 @@ func (w *Wireframe) Remove(r debug.Renderer) {
 	w.removeLocked(r)
 }
 
-func (w *Wireframe) removeLocked(r debug.Renderer) {
-	w.removeExtra(r, 0)
+// RemoveAsync removes all lines in the wireframe without blocking the caller on
+// the renderer. Calls are coalesced with pending DrawAsync calls, so the latest
+// requested state wins. The renderer must remain valid until the worker drains.
+func (w *Wireframe) RemoveAsync(r debug.Renderer) {
+	w.enqueue(wireframeOp{renderer: r, remove: true})
 }
 
-func (w *Wireframe) line(index int) *debug.Line {
-	for len(w.lines) <= index {
-		w.lines = append(w.lines, &debug.Line{})
-	}
-	return w.lines[index]
-}
-
-func (w *Wireframe) removeExtra(r debug.Renderer, keep int) {
-	if keep >= len(w.lines) {
+func (w *Wireframe) enqueue(op wireframeOp) {
+	w.asyncMu.Lock()
+	w.asyncOp = &op
+	if w.asyncRunning {
+		w.asyncMu.Unlock()
 		return
 	}
-	for _, line := range w.lines[keep:] {
+	w.asyncRunning = true
+	w.asyncMu.Unlock()
+	go w.runAsync()
+}
+
+func (w *Wireframe) runAsync() {
+	for {
+		w.asyncMu.Lock()
+		op := w.asyncOp
+		w.asyncOp = nil
+		if op == nil {
+			w.asyncRunning = false
+			w.asyncMu.Unlock()
+			return
+		}
+		w.asyncMu.Unlock()
+		if op.remove {
+			w.Remove(op.renderer)
+			continue
+		}
+		w.Draw(op.renderer, op.segments, op.colour)
+	}
+}
+
+func (w *Wireframe) removeLocked(r debug.Renderer) {
+	if len(w.lines) == 0 {
+		return
+	}
+	for _, line := range w.lines {
 		r.RemoveDebugShape(line)
 	}
-	w.lines = w.lines[:keep]
+	w.lines = nil
 }
