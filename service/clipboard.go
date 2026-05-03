@@ -8,7 +8,6 @@ import (
 	"github.com/df-mc/dragonfly/server/world"
 	"github.com/df-mc/we/edit"
 	"github.com/df-mc/we/geo"
-	"github.com/df-mc/we/history"
 	"github.com/df-mc/we/parse"
 )
 
@@ -40,15 +39,20 @@ func Copy(tx *world.Tx, s Session, _ cube.Pos, dir cube.Direction, args []string
 // Paste writes s's clipboard at origin, rotated to match dir. The "-a" flag in
 // args skips writing air. Returns ErrClipboardEmpty if no clipboard is set.
 func Paste(tx *world.Tx, s Session, origin cube.Pos, dir cube.Direction, args []string) (ChangeResult, error) {
+	args, opts := ParseEditOptions(args)
+	return PasteWithOptions(tx, s, origin, dir, args, opts)
+}
+
+func PasteWithOptions(tx *world.Tx, s Session, origin cube.Pos, dir cube.Direction, args []string, opts EditOptions) (ChangeResult, error) {
 	cb, ok := s.Clipboard()
 	if !ok {
 		return ChangeResult{}, ErrClipboardEmpty
 	}
-	batch := history.NewBatch(false)
+	batch := historyBatch(opts)
 	if err := edit.PasteClipboard(tx, cb, origin, dir, HasFlag(args, "-a"), batch); err != nil {
 		return ChangeResult{}, err
 	}
-	return record(s, batch), nil
+	return finishEdit(s, batch, len(cb.Entries)), nil
 }
 
 // ClearClipboard removes the stored clipboard from s.
@@ -58,15 +62,19 @@ func ClearClipboard(s Session) {
 
 // Cut copies the selection to s's clipboard (including air) and clears it to air.
 func Cut(tx *world.Tx, s Session, _ cube.Pos, dir cube.Direction) (ChangeResult, error) {
+	return CutWithOptions(tx, s, cube.Pos{}, dir, EditOptions{})
+}
+
+func CutWithOptions(tx *world.Tx, s Session, _ cube.Pos, dir cube.Direction, opts EditOptions) (ChangeResult, error) {
 	area, err := selectedArea(s)
 	if err != nil {
 		return ChangeResult{}, err
 	}
 	cb := edit.CopySelection(tx, area, areaCenter(area), dir, edit.BlockMask{All: true, IncludeAir: true}, false)
 	s.SetClipboard(cb)
-	batch := history.NewBatch(false)
+	batch := historyBatch(opts)
 	edit.ClearArea(tx, area, batch)
-	return record(s, batch), nil
+	return finishEdit(s, batch, int(area.Volume())), nil
 }
 
 // Schematic dispatches the //schematic subcommands: create, paste, delete, list.
@@ -96,15 +104,16 @@ func Schematic(tx *world.Tx, s Session, origin cube.Pos, dir cube.Direction, sto
 		if len(args) < 2 {
 			return SchematicResult{}, fmt.Errorf("schematic paste requires a name")
 		}
+		pasteArgs, opts := ParseEditOptions(args[2:])
 		cb, err := store.Load(args[1])
 		if err != nil {
 			return SchematicResult{}, err
 		}
-		batch := history.NewBatch(false)
-		if err := edit.PasteClipboard(tx, cb, origin, dir, HasFlag(args[2:], "-a"), batch); err != nil {
+		batch := historyBatch(opts)
+		if err := edit.PasteClipboard(tx, cb, origin, dir, HasFlag(pasteArgs, "-a"), batch); err != nil {
 			return SchematicResult{}, err
 		}
-		result := record(s, batch)
+		result := finishEdit(s, batch, len(cb.Entries))
 		return SchematicResult{Name: args[1], Changed: result.Changed}, nil
 	case "delete":
 		if len(args) < 2 {
