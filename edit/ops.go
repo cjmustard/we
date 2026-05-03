@@ -100,12 +100,16 @@ func ChooseBlock(blocks []world.Block, r *rand.Rand) world.Block {
 
 // FillArea sets every block in area to a random pick from blocks.
 func FillArea(tx *world.Tx, area geo.Area, blocks []world.Block, batch *history.Batch) {
+	if len(blocks) <= 1 {
+		writeUniformArea(tx, area, ChooseBlock(blocks, nil), batch)
+		return
+	}
 	writeDenseArea(tx, area, func(cube.Pos) world.Block { return ChooseBlock(blocks, nil) }, batch)
 }
 
 // ClearArea replaces every block in area with air and removes any liquid layer.
 func ClearArea(tx *world.Tx, area geo.Area, batch *history.Batch) {
-	writeDenseArea(tx, area, func(cube.Pos) world.Block { return mcblock.Air{} }, batch)
+	writeUniformArea(tx, area, mcblock.Air{}, batch)
 }
 
 // Center places one block at the integer-rounded centre of area and returns the position.

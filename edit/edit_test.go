@@ -74,6 +74,33 @@ func TestFillUndoRedoBatch(t *testing.T) {
 	})
 }
 
+func TestDenseFillThenIndexedWriteCoalescesHistory(t *testing.T) {
+	withTx(t, func(tx *world.Tx) {
+		pos := cube.Pos{0, 0, 0}
+		tx.SetBlock(pos, mcblock.Dirt{}, nil)
+
+		h := history.NewHistory(10)
+		batch := history.NewBatch(false)
+		edit.FillArea(tx, geo.NewArea(0, 0, 0, 0, 0, 0), []world.Block{mcblock.Stone{}}, batch)
+		batch.SetBlockFast(tx, pos, mcblock.Gold{})
+		if got := h.Record(batch); got != 1 {
+			t.Fatalf("Record() = %d, want 1", got)
+		}
+		if !h.Undo(tx, false) {
+			t.Fatal("Undo returned false")
+		}
+		if !parse.SameBlock(tx.Block(pos), mcblock.Dirt{}) {
+			t.Fatal("undo did not restore the state before the dense write")
+		}
+		if !h.Redo(tx, false) {
+			t.Fatal("Redo returned false")
+		}
+		if !parse.SameBlock(tx.Block(pos), mcblock.Gold{}) {
+			t.Fatal("redo did not restore the final indexed write")
+		}
+	})
+}
+
 func TestFillAreaLiquidUndoRedoBatch(t *testing.T) {
 	var failure string
 	withTx(t, func(tx *world.Tx) {

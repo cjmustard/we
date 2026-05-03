@@ -36,7 +36,7 @@ var fastBlockSetOpts = &world.SetOpts{DisableBlockUpdates: true}
 
 // NewBatch creates a batch; brush batches go on the isolated brush undo stack.
 func NewBatch(brush bool) *Batch {
-	return &Batch{Brush: brush, index: map[cube.Pos]int{}}
+	return &Batch{Brush: brush}
 }
 
 // Grow preallocates storage for up to n touched positions. It is a performance
@@ -44,11 +44,6 @@ func NewBatch(brush bool) *Batch {
 func (b *Batch) Grow(n int) {
 	if b == nil || n <= 0 {
 		return
-	}
-	if b.index == nil {
-		b.index = make(map[cube.Pos]int, n)
-	} else if len(b.index) == 0 {
-		b.index = make(map[cube.Pos]int, n)
 	}
 	b.changes = slices.Grow(b.changes, n)
 }
@@ -69,6 +64,9 @@ func sameSnapshot(a, b snapshot) bool {
 }
 
 func (b *Batch) ensure(tx *world.Tx, pos cube.Pos) int {
+	if b.index == nil {
+		b.rebuildIndex()
+	}
 	if i, ok := b.index[pos]; ok {
 		return i
 	}
@@ -76,6 +74,13 @@ func (b *Batch) ensure(tx *world.Tx, pos cube.Pos) int {
 	b.index[pos] = i
 	b.changes = append(b.changes, Change{Pos: pos, Before: snapshotAt(tx, pos)})
 	return i
+}
+
+func (b *Batch) rebuildIndex() {
+	b.index = make(map[cube.Pos]int, len(b.changes)+1)
+	for i, c := range b.changes {
+		b.index[c.Pos] = i
+	}
 }
 
 // SetBlock records and writes a block. Passing nil writes air, matching
@@ -133,8 +138,13 @@ func (b *Batch) Len() int {
 	return n
 }
 
+// Empty reports whether no positions have been recorded yet.
+func (b *Batch) Empty() bool {
+	return b == nil || len(b.changes) == 0
+}
+
 func (b *Batch) compact() (Batch, int) {
-	out := Batch{Brush: b.Brush, changes: make([]Change, 0, len(b.changes))}
+	out := Batch{Brush: b.Brush, changes: b.changes[:0]}
 	for _, c := range b.changes {
 		if !sameSnapshot(c.Before, c.After) {
 			out.changes = append(out.changes, c)
@@ -180,6 +190,24 @@ func (b *Batch) SetAfterForIndex(tx *world.Tx, i int, pos cube.Pos) {
 // knows the post-write block/liquid state, avoiding an extra world read.
 func (b *Batch) SetAfterKnownForIndex(i int, block world.Block, liq world.Liquid, hasLiq bool) {
 	b.changes[i].After = newSnapshot(block, liq, hasLiq, b.changes[i].Before.Biome)
+}
+
+// AppendKnownUnique records a position the caller knows has not appeared in the
+// batch yet. It avoids the per-position index map used by EnsurePos for dense
+// one-pass operations. If a later operation needs indexed access, the index is
+// rebuilt lazily from these appended changes.
+func (b *Batch) AppendKnownUnique(tx *world.Tx, pos cube.Pos, block world.Block, liq world.Liquid, hasLiq bool) int {
+	i := len(b.changes)
+	before := snapshotAt(tx, pos)
+	b.changes = append(b.changes, Change{
+		Pos:    pos,
+		Before: before,
+		After:  newSnapshot(block, liq, hasLiq, before.Biome),
+	})
+	if b.index != nil {
+		b.index[pos] = i
+	}
+	return i
 }
 
 func applySnapshot(tx *world.Tx, pos cube.Pos, s snapshot) {
