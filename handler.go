@@ -58,8 +58,8 @@ func (h *Handler) HandleItemUseOnBlock(ctx *player.Context, pos cube.Pos, face c
 		s := session.Ensure(h.p)
 		if s.SetPos2(pos) {
 			h.p.Messagef("pos2 set to %v", pos)
+			h.traceSelection(s)
 		}
-		h.traceSelection(s)
 		return
 	}
 	if cfg, ok := h.heldBrush(); ok {
@@ -81,8 +81,8 @@ func (h *Handler) HandleBlockBreak(ctx *player.Context, pos cube.Pos, drops *[]i
 		s := session.Ensure(h.p)
 		if s.SetPos1(pos) {
 			h.p.Messagef("pos1 set to %v", pos)
+			h.traceSelection(s)
 		}
-		h.traceSelection(s)
 		return
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"github.com/df-mc/dragonfly/server/block/cube"
 	"github.com/df-mc/dragonfly/server/world"
 	"github.com/df-mc/we/edit"
+	"github.com/df-mc/we/geo"
 	"github.com/df-mc/we/history"
 	"github.com/df-mc/we/parse"
 )
@@ -77,6 +78,12 @@ func Drain(tx *world.Tx, s Session, center cube.Pos, radius int) (ChangeResult, 
 func DrainWithOptions(tx *world.Tx, s Session, center cube.Pos, radius int, opts EditOptions) (ChangeResult, error) {
 	if radius < 1 {
 		return ChangeResult{}, fmt.Errorf("radius must be positive")
+	}
+	// Drain only writes inside the sphere, but checking the bounding cube is a
+	// conservative cap for client-cache pressure.
+	area := geo.NewArea(center[0]-radius, center[1]-radius, center[2]-radius, center[0]+radius, center[1]+radius, center[2]+radius)
+	if err := checkArea(guardrailsFor(s), area); err != nil {
+		return ChangeResult{}, err
 	}
 	batch := historyBatch(opts)
 	edit.Drain(tx, center, radius, batch)
@@ -155,6 +162,10 @@ func ReplaceNearWithOptions(tx *world.Tx, s Session, center cube.Pos, distance i
 	}
 	mask, to, err := ParseMaskTo(args)
 	if err != nil {
+		return ChangeResult{}, err
+	}
+	area := geo.NewArea(center[0]-distance, center[1]-distance, center[2]-distance, center[0]+distance, center[1]+distance, center[2]+distance)
+	if err := checkArea(guardrailsFor(s), area); err != nil {
 		return ChangeResult{}, err
 	}
 	batch := historyBatch(opts)

@@ -26,7 +26,7 @@ func RemoveAboveWithOptions(tx *world.Tx, s Session, center cube.Pos, args []str
 		return ChangeResult{}, err
 	}
 	area := geo.NewArea(center[0]-radius, center[1]+1, center[2]-radius, center[0]+radius, center[1]+height, center[2]+radius)
-	if err := guardrailsFor(s).CheckSelectionVolume(area.Volume()); err != nil {
+	if err := checkArea(guardrailsFor(s), area); err != nil {
 		return ChangeResult{}, err
 	}
 	batch := historyBatch(opts)
@@ -46,7 +46,7 @@ func RemoveBelowWithOptions(tx *world.Tx, s Session, center cube.Pos, args []str
 		return ChangeResult{}, err
 	}
 	area := geo.NewArea(center[0]-radius, center[1]-height, center[2]-radius, center[0]+radius, center[1]-1, center[2]+radius)
-	if err := guardrailsFor(s).CheckSelectionVolume(area.Volume()); err != nil {
+	if err := checkArea(guardrailsFor(s), area); err != nil {
 		return ChangeResult{}, err
 	}
 	batch := historyBatch(opts)
@@ -93,7 +93,7 @@ func RemoveNearWithOptions(tx *world.Tx, s Session, center cube.Pos, args []stri
 		return ChangeResult{}, err
 	}
 	area := geo.NewArea(center[0]-radius, center[1]-radius, center[2]-radius, center[0]+radius, center[1]+radius, center[2]+radius)
-	if err := guardrailsFor(s).CheckSelectionVolume(area.Volume()); err != nil {
+	if err := checkArea(guardrailsFor(s), area); err != nil {
 		return ChangeResult{}, err
 	}
 	batch := historyBatch(opts)

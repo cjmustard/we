@@ -15,7 +15,7 @@ import (
 // restrict the copy to those block types. The clipboard is anchored at the
 // selection centre so shapes paste around the target instead of from one corner.
 func Copy(tx *world.Tx, s Session, _ cube.Pos, dir cube.Direction, args []string) (CopyResult, error) {
-	area, err := selectedArea(s)
+	area, err := selectedReadArea(s)
 	if err != nil {
 		return CopyResult{}, err
 	}
@@ -48,8 +48,12 @@ func PasteWithOptions(tx *world.Tx, s Session, origin cube.Pos, dir cube.Directi
 	if !ok {
 		return ChangeResult{}, ErrClipboardEmpty
 	}
+	noAir := HasFlag(args, "-a")
+	if err := guardrailsFor(s).CheckEditSubChunks(edit.PasteSubChunkCount(cb, origin, dir, noAir)); err != nil {
+		return ChangeResult{}, err
+	}
 	batch := historyBatch(opts)
-	if err := edit.PasteClipboard(tx, cb, origin, dir, HasFlag(args, "-a"), batch); err != nil {
+	if err := edit.PasteClipboard(tx, cb, origin, dir, noAir, batch); err != nil {
 		return ChangeResult{}, err
 	}
 	return finishEdit(s, batch, len(cb.Entries)), nil
@@ -91,7 +95,7 @@ func Schematic(tx *world.Tx, s Session, origin cube.Pos, dir cube.Direction, sto
 		if len(args) < 2 {
 			return SchematicResult{}, fmt.Errorf("schematic create requires a name")
 		}
-		area, err := selectedArea(s)
+		area, err := selectedReadArea(s)
 		if err != nil {
 			return SchematicResult{}, err
 		}
@@ -109,8 +113,12 @@ func Schematic(tx *world.Tx, s Session, origin cube.Pos, dir cube.Direction, sto
 		if err != nil {
 			return SchematicResult{}, err
 		}
+		noAir := HasFlag(pasteArgs, "-a")
+		if err := guardrailsFor(s).CheckEditSubChunks(edit.PasteSubChunkCount(cb, origin, dir, noAir)); err != nil {
+			return SchematicResult{}, err
+		}
 		batch := historyBatch(opts)
-		if err := edit.PasteClipboard(tx, cb, origin, dir, HasFlag(pasteArgs, "-a"), batch); err != nil {
+		if err := edit.PasteClipboard(tx, cb, origin, dir, noAir, batch); err != nil {
 			return SchematicResult{}, err
 		}
 		result := finishEdit(s, batch, len(cb.Entries))
