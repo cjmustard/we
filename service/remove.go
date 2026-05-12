@@ -26,10 +26,13 @@ func RemoveAboveWithOptions(tx *world.Tx, s Session, center cube.Pos, args []str
 		return ChangeResult{}, err
 	}
 	area := geo.NewArea(center[0]-radius, center[1]+1, center[2]-radius, center[0]+radius, center[1]+height, center[2]+radius)
-	if err := guardrailsFor(s).CheckSelectionVolume(area.Volume()); err != nil {
+	if err := checkArea(guardrailsFor(s), area); err != nil {
 		return ChangeResult{}, err
 	}
-	batch := historyBatch(opts)
+	batch, err := historyBatchForSize(opts, area.Volume())
+	if err != nil {
+		return ChangeResult{}, err
+	}
 	edit.ClearArea(tx, area, batch)
 	return finishEdit(s, batch, int(area.Volume())), nil
 }
@@ -46,10 +49,13 @@ func RemoveBelowWithOptions(tx *world.Tx, s Session, center cube.Pos, args []str
 		return ChangeResult{}, err
 	}
 	area := geo.NewArea(center[0]-radius, center[1]-height, center[2]-radius, center[0]+radius, center[1]-1, center[2]+radius)
-	if err := guardrailsFor(s).CheckSelectionVolume(area.Volume()); err != nil {
+	if err := checkArea(guardrailsFor(s), area); err != nil {
 		return ChangeResult{}, err
 	}
-	batch := historyBatch(opts)
+	batch, err := historyBatchForSize(opts, area.Volume())
+	if err != nil {
+		return ChangeResult{}, err
+	}
 	edit.ClearArea(tx, area, batch)
 	return finishEdit(s, batch, int(area.Volume())), nil
 }
@@ -93,10 +99,13 @@ func RemoveNearWithOptions(tx *world.Tx, s Session, center cube.Pos, args []stri
 		return ChangeResult{}, err
 	}
 	area := geo.NewArea(center[0]-radius, center[1]-radius, center[2]-radius, center[0]+radius, center[1]+radius, center[2]+radius)
-	if err := guardrailsFor(s).CheckSelectionVolume(area.Volume()); err != nil {
+	if err := checkArea(guardrailsFor(s), area); err != nil {
 		return ChangeResult{}, err
 	}
-	batch := historyBatch(opts)
+	batch, err := historyBatchForSize(opts, area.Volume())
+	if err != nil {
+		return ChangeResult{}, err
+	}
 	edit.RemoveNear(tx, center, radius, edit.BlockMask{Blocks: blocks}, batch)
 	return finishEdit(s, batch, int(area.Volume())), nil
 }
@@ -111,7 +120,10 @@ func NaturalizeWithOptions(tx *world.Tx, s Session, opts EditOptions) (ChangeRes
 	if err != nil {
 		return ChangeResult{}, err
 	}
-	batch := historyBatch(opts)
+	batch, err := historyBatchForSize(opts, area.Volume())
+	if err != nil {
+		return ChangeResult{}, err
+	}
 	edit.Naturalize(tx, area, batch)
 	return finishEdit(s, batch, int(area.Volume())), nil
 }

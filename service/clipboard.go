@@ -7,15 +7,14 @@ import (
 	"github.com/df-mc/dragonfly/server/block/cube"
 	"github.com/df-mc/dragonfly/server/world"
 	"github.com/df-mc/we/edit"
-	"github.com/df-mc/we/geo"
 	"github.com/df-mc/we/parse"
 )
 
 // Copy stores the current selection on s's clipboard. Optional args of "only <blocks>"
-// restrict the copy to those block types. The clipboard is anchored at the
-// selection centre so shapes paste around the target instead of from one corner.
-func Copy(tx *world.Tx, s Session, _ cube.Pos, dir cube.Direction, args []string) (CopyResult, error) {
-	area, err := selectedArea(s)
+// restrict the copy to those block types. Offsets are anchored at origin, which
+// is normally the player's block position when //copy is run.
+func Copy(tx *world.Tx, s Session, origin cube.Pos, dir cube.Direction, args []string) (CopyResult, error) {
+	area, err := selectedReadArea(s)
 	if err != nil {
 		return CopyResult{}, err
 	}
@@ -31,7 +30,7 @@ func Copy(tx *world.Tx, s Session, _ cube.Pos, dir cube.Direction, args []string
 		}
 		mask = edit.BlockMask{Blocks: blocks}
 	}
-	cb := edit.CopySelection(tx, area, areaCenter(area), dir, mask, only)
+	cb := edit.CopySelection(tx, area, origin, dir, mask, only)
 	s.SetClipboard(cb)
 	return CopyResult{Copied: len(cb.Entries)}, nil
 }
@@ -48,8 +47,15 @@ func PasteWithOptions(tx *world.Tx, s Session, origin cube.Pos, dir cube.Directi
 	if !ok {
 		return ChangeResult{}, ErrClipboardEmpty
 	}
+	noAir := HasFlag(args, "-a")
+	if err := guardrailsFor(s).CheckEditSubChunks(edit.PasteSubChunkCount(cb, origin, dir, noAir)); err != nil {
+		return ChangeResult{}, err
+	}
+	if err := ensureClipboardUndoBudget(len(cb.Entries), opts); err != nil {
+		return ChangeResult{}, err
+	}
 	batch := historyBatch(opts)
-	if err := edit.PasteClipboard(tx, cb, origin, dir, HasFlag(args, "-a"), batch); err != nil {
+	if err := edit.PasteClipboard(tx, cb, origin, dir, noAir, batch); err != nil {
 		return ChangeResult{}, err
 	}
 	return finishEdit(s, batch, len(cb.Entries)), nil
@@ -61,18 +67,21 @@ func ClearClipboard(s Session) {
 }
 
 // Cut copies the selection to s's clipboard (including air) and clears it to air.
-func Cut(tx *world.Tx, s Session, _ cube.Pos, dir cube.Direction) (ChangeResult, error) {
-	return CutWithOptions(tx, s, cube.Pos{}, dir, EditOptions{})
+func Cut(tx *world.Tx, s Session, origin cube.Pos, dir cube.Direction) (ChangeResult, error) {
+	return CutWithOptions(tx, s, origin, dir, EditOptions{})
 }
 
-func CutWithOptions(tx *world.Tx, s Session, _ cube.Pos, dir cube.Direction, opts EditOptions) (ChangeResult, error) {
+func CutWithOptions(tx *world.Tx, s Session, origin cube.Pos, dir cube.Direction, opts EditOptions) (ChangeResult, error) {
 	area, err := selectedArea(s)
 	if err != nil {
 		return ChangeResult{}, err
 	}
-	cb := edit.CopySelection(tx, area, areaCenter(area), dir, edit.BlockMask{All: true, IncludeAir: true}, false)
+	batch, err := historyBatchForSize(opts, area.Volume())
+	if err != nil {
+		return ChangeResult{}, err
+	}
+	cb := edit.CopySelection(tx, area, origin, dir, edit.BlockMask{All: true, IncludeAir: true}, false)
 	s.SetClipboard(cb)
-	batch := historyBatch(opts)
 	edit.ClearArea(tx, area, batch)
 	return finishEdit(s, batch, int(area.Volume())), nil
 }
@@ -91,11 +100,11 @@ func Schematic(tx *world.Tx, s Session, origin cube.Pos, dir cube.Direction, sto
 		if len(args) < 2 {
 			return SchematicResult{}, fmt.Errorf("schematic create requires a name")
 		}
-		area, err := selectedArea(s)
+		area, err := selectedReadArea(s)
 		if err != nil {
 			return SchematicResult{}, err
 		}
-		cb := edit.CopySelection(tx, area, areaCenter(area), dir, edit.BlockMask{All: true, IncludeAir: true}, false)
+		cb := edit.CopySelection(tx, area, origin, dir, edit.BlockMask{All: true, IncludeAir: true}, false)
 		if err := store.Save(args[1], cb); err != nil {
 			return SchematicResult{}, err
 		}
@@ -105,15 +114,43 @@ func Schematic(tx *world.Tx, s Session, origin cube.Pos, dir cube.Direction, sto
 			return SchematicResult{}, fmt.Errorf("schematic paste requires a name")
 		}
 		pasteArgs, opts := ParseEditOptions(args[2:])
+		noAir := HasFlag(pasteArgs, "-a")
+		if opts.NoUndo && !noAir {
+			if compactStore, ok := store.(edit.CompactJavaSchematicStore); ok {
+				compact, _, found, err := compactStore.LoadCompactJavaSchematic(args[1])
+				if err != nil {
+					return SchematicResult{}, err
+				}
+				if found {
+					if err := guardrailsFor(s).CheckEditSubChunks(edit.CompactPasteSubChunkCount(compact, origin, dir)); err != nil {
+						return SchematicResult{}, err
+					}
+					if err := edit.PasteCompactSchematicNoUndo(tx, compact, origin, dir); err != nil {
+						return SchematicResult{}, err
+					}
+					return SchematicResult{Name: args[1], Changed: compact.Volume()}, nil
+				}
+			}
+		}
 		cb, err := store.Load(args[1])
 		if err != nil {
 			return SchematicResult{}, err
 		}
-		batch := historyBatch(opts)
-		if err := edit.PasteClipboard(tx, cb, origin, dir, HasFlag(pasteArgs, "-a"), batch); err != nil {
+		if err := guardrailsFor(s).CheckEditSubChunks(edit.PasteSubChunkCount(cb, origin, dir, noAir)); err != nil {
 			return SchematicResult{}, err
 		}
-		result := finishEdit(s, batch, len(cb.Entries))
+		if err := ensureClipboardUndoBudget(len(cb.Entries), opts); err != nil {
+			return SchematicResult{}, err
+		}
+		changed := len(cb.Entries)
+		batch := historyBatch(opts)
+		// PasteClipboardConsuming mutates cb in place — safe here because the
+		// clipboard was just loaded from the store solely for this paste and
+		// is dropped on return. Saves a full slice copy on arena-scale schematics.
+		if err := edit.PasteClipboardConsuming(tx, cb, origin, dir, noAir, batch); err != nil {
+			return SchematicResult{}, err
+		}
+		result := finishEdit(s, batch, changed)
 		return SchematicResult{Name: args[1], Changed: result.Changed}, nil
 	case "delete":
 		if len(args) < 2 {
@@ -132,18 +169,6 @@ func Schematic(tx *world.Tx, s Session, origin cube.Pos, dir cube.Direction, sto
 	default:
 		return SchematicResult{}, fmt.Errorf("unknown schematic subcommand")
 	}
-}
-
-func areaCenter(area geo.Area) cube.Pos {
-	return cube.Pos{
-		midpoint(area.Min[0], area.Max[0]),
-		midpoint(area.Min[1], area.Max[1]),
-		midpoint(area.Min[2], area.Max[2]),
-	}
-}
-
-func midpoint(minimum, maximum int) int {
-	return minimum + (maximum-minimum)/2
 }
 
 // Undo reverts the most recent batch. If brush is true, only the brush stack is

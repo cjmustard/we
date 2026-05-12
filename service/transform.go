@@ -7,6 +7,7 @@ import (
 	"github.com/df-mc/dragonfly/server/block/cube"
 	"github.com/df-mc/dragonfly/server/world"
 	"github.com/df-mc/we/edit"
+	"github.com/df-mc/we/geo"
 )
 
 // Move shifts blocks matching args[0] by args[1] along dir. The "-a" flag skips
@@ -28,11 +29,18 @@ func MoveWithOptions(tx *world.Tx, s Session, dir cube.Pos, args []string, opts 
 	if err != nil {
 		return ChangeResult{}, err
 	}
-	area, err := selectedArea(s)
+	area, err := selectedReadArea(s)
 	if err != nil {
 		return ChangeResult{}, err
 	}
-	batch := historyBatch(opts)
+	dest := area.Add(cube.Pos{dir[0] * dist, dir[1] * dist, dir[2] * dist})
+	if err := guardrailsFor(s).CheckEditSubChunks(geo.UniqueSubChunks(area, dest)); err != nil {
+		return ChangeResult{}, err
+	}
+	batch, err := historyBatchForSize(opts, area.Volume()*2)
+	if err != nil {
+		return ChangeResult{}, err
+	}
 	edit.Move(tx, area, dir, dist, mask, HasFlag(args[2:], "-a"), batch)
 	return finishEdit(s, batch, int(area.Volume())*2), nil
 }
@@ -54,13 +62,28 @@ func StackWithOptions(tx *world.Tx, s Session, dir cube.Pos, args []string, opts
 	if err := guardrailsFor(s).CheckStackCopies(amount); err != nil {
 		return ChangeResult{}, err
 	}
-	area, err := selectedArea(s)
+	area, err := selectedReadArea(s)
 	if err != nil {
 		return ChangeResult{}, err
 	}
-	batch := historyBatch(opts)
+	if err := guardrailsFor(s).CheckEditSubChunks(stackEditBounds(area, dir, amount).SubChunkCount()); err != nil {
+		return ChangeResult{}, err
+	}
+	batch, err := historyBatchForSize(opts, area.Volume()*int64(amount))
+	if err != nil {
+		return ChangeResult{}, err
+	}
 	edit.Stack(tx, area, dir, amount, HasFlag(args[1:], "-a"), batch)
 	return finishEdit(s, batch, int(area.Volume())*amount), nil
+}
+
+func stackEditBounds(area geo.Area, dir cube.Pos, amount int) geo.Area {
+	if amount <= 0 {
+		return area
+	}
+	step := cube.Pos{dir[0] * area.Dx(), dir[1] * area.Dy(), dir[2] * area.Dz()}
+	last := cube.Pos{step[0] * amount, step[1] * amount, step[2] * amount}
+	return area.Add(step).Union(area.Add(last))
 }
 
 // Rotate rotates the clipboard by args[0] degrees (90, 180, 270, or 360)

@@ -24,6 +24,13 @@ type SchematicStore interface {
 	List() ([]string, error)
 }
 
+// CompactJavaSchematicStore optionally exposes a memory-efficient fast path
+// for Java schematic files. found is false when no Java schematic exists for
+// name, allowing callers to fall back to the regular SchematicStore path.
+type CompactJavaSchematicStore interface {
+	LoadCompactJavaSchematic(name string) (*CompactSchematic, JavaSchematicReport, bool, error)
+}
+
 // FileSchematicStore stores schematic JSON files in a directory.
 type FileSchematicStore struct {
 	Dir string
@@ -55,6 +62,11 @@ type schematicEntry struct {
 }
 
 var schematicNameRE = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+
+var (
+	javaSchematicExtensions = []string{".schem", ".schematic"}
+	schematicExtensions     = []string{".schem", ".schematic", ".json"}
+)
 
 func validateSchematicName(name string) error {
 	if !schematicNameRE.MatchString(name) {
@@ -105,7 +117,24 @@ func (s FileSchematicStore) Save(name string, cb *Clipboard) error {
 }
 
 // Load reads a previously saved schematic into a Clipboard.
+//
+// Java-edition schematics (.schem Sponge v2, .schematic legacy MCEdit) are
+// preferred over the native .json format when both exist with the same
+// name — they're the format players are likely to upload. Translation of
+// Java block-states to Bedrock is delegated to the github.com/Velvet-MC/s2d
+// library; the resulting unknown-block report is silently discarded by
+// this method (callers that want it should call ImportJavaSchematic
+// directly).
 func (s FileSchematicStore) Load(name string) (*Clipboard, error) {
+	if err := validateSchematicName(name); err != nil {
+		return nil, err
+	}
+	if p, found, err := s.javaSchematicPath(name); err != nil {
+		return nil, err
+	} else if found {
+		cb, _, err := ImportJavaSchematic(p)
+		return cb, err
+	}
 	path, err := s.path(name)
 	if err != nil {
 		return nil, err
@@ -142,16 +171,56 @@ func (s FileSchematicStore) Load(name string) (*Clipboard, error) {
 	return cb, nil
 }
 
-// Delete removes a saved schematic file.
-func (s FileSchematicStore) Delete(name string) error {
-	path, err := s.path(name)
-	if err != nil {
-		return err
+// LoadCompactJavaSchematic imports a Java schematic into a compact
+// palette-backed representation. It returns found=false when name has no
+// .schem/.schematic file, so callers can fall back to Load.
+func (s FileSchematicStore) LoadCompactJavaSchematic(name string) (*CompactSchematic, JavaSchematicReport, bool, error) {
+	if err := validateSchematicName(name); err != nil {
+		return nil, JavaSchematicReport{}, false, err
 	}
-	return os.Remove(path)
+	p, found, err := s.javaSchematicPath(name)
+	if err != nil || !found {
+		return nil, JavaSchematicReport{}, found, err
+	}
+	compact, report, err := ImportJavaCompactSchematic(p)
+	return compact, report, true, err
 }
 
-// List returns saved schematic names in alphabetical order.
+func (s FileSchematicStore) javaSchematicPath(name string) (string, bool, error) {
+	for _, ext := range javaSchematicExtensions {
+		p := filepath.Join(s.dir(), name+ext)
+		if _, statErr := os.Stat(p); statErr == nil {
+			return p, true, nil
+		} else if !os.IsNotExist(statErr) {
+			return "", false, statErr
+		}
+	}
+	return "", false, nil
+}
+
+// Delete removes a saved schematic file.
+func (s FileSchematicStore) Delete(name string) error {
+	if err := validateSchematicName(name); err != nil {
+		return err
+	}
+	removed := false
+	for _, ext := range schematicExtensions {
+		path := filepath.Join(s.dir(), name+ext)
+		if err := os.Remove(path); err == nil {
+			removed = true
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+	}
+	if !removed {
+		return fmt.Errorf("schematic %q: %w", name, os.ErrNotExist)
+	}
+	return nil
+}
+
+// List returns saved schematic names in alphabetical order. Files of any
+// supported extension (.schem, .schematic, .json) are listed; duplicate
+// base names (same name across multiple extensions) are listed once.
 func (s FileSchematicStore) List() ([]string, error) {
 	entries, err := os.ReadDir(s.dir())
 	if os.IsNotExist(err) {
@@ -160,12 +229,26 @@ func (s FileSchematicStore) List() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	supported := make(map[string]bool, len(schematicExtensions))
+	for _, ext := range schematicExtensions {
+		supported[ext] = true
+	}
+	seen := make(map[string]struct{})
 	var names []string
 	for _, e := range entries {
-		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
+		if e.IsDir() {
 			continue
 		}
-		names = append(names, e.Name()[:len(e.Name())-len(".json")])
+		ext := filepath.Ext(e.Name())
+		if !supported[ext] {
+			continue
+		}
+		base := e.Name()[:len(e.Name())-len(ext)]
+		if _, ok := seen[base]; ok {
+			continue
+		}
+		seen[base] = struct{}{}
+		names = append(names, base)
 	}
 	sort.Strings(names)
 	return names, nil

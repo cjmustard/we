@@ -31,6 +31,9 @@ func ApplyBrush(tx *world.Tx, actor BrushActor, target cube.Pos, cfg BrushConfig
 		if err := limits.CheckBrushVolume(bounds.Volume()); err != nil {
 			return err
 		}
+		if err := limits.CheckEditSubChunks(bounds.SubChunkCount()); err != nil {
+			return err
+		}
 	}
 	switch brushType {
 	case BrushSphere, BrushCylinder, BrushPyramid, BrushCone, BrushCube:
@@ -99,6 +102,9 @@ func BrushVolumeBounds(target cube.Pos, cfg BrushConfig) (area geo.Area, ok bool
 // generated volume extends out through face instead of being centred inside the
 // clicked block/player. Non-volume brushes use surface directly.
 func BrushAnchorFromSurface(surface cube.Pos, face cube.Face, cfg BrushConfig) cube.Pos {
+	if brushAnchorsOnHitBlock(strings.ToLower(cfg.Type)) {
+		return surface.Side(face.Opposite())
+	}
 	if !brushTypeUsesShapeVolume(strings.ToLower(cfg.Type)) {
 		return surface
 	}

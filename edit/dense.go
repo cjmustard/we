@@ -25,6 +25,13 @@ type denseBuffer struct {
 	ordered []bufferEntry
 }
 
+type rotatedDenseBuffer struct {
+	min    cube.Pos
+	dims   [3]int
+	source denseBuffer
+	turns  int
+}
+
 type denseBlockStructure struct {
 	d       [3]int
 	entries []denseBlockEntry
@@ -35,6 +42,39 @@ func (s denseBlockStructure) Dimensions() [3]int { return s.d }
 func (s denseBlockStructure) At(x, y, z int, _ func(x, y, z int) world.Block) (world.Block, world.Liquid) {
 	entry := s.entries[(x*s.d[1]+y)*s.d[2]+z]
 	return entry.Block, entry.Liq
+}
+
+// bufferDenseStructure wraps a pre-XYZ-ordered []bufferEntry slice as a
+// world.Structure for tx.BuildStructure, so the no-batch fast path can
+// stream cells directly without materialising a parallel ~5 GB slice of
+// denseBlockEntry copies on arena-scale clipboards.
+type bufferDenseStructure struct {
+	d       [3]int
+	entries []bufferEntry
+}
+
+func (s bufferDenseStructure) Dimensions() [3]int { return s.d }
+
+func (s bufferDenseStructure) At(x, y, z int, _ func(x, y, z int) world.Block) (world.Block, world.Liquid) {
+	return structureLayers(s.entries[(x*s.d[1]+y)*s.d[2]+z])
+}
+
+type rotatedBufferDenseStructure struct {
+	min    cube.Pos
+	d      [3]int
+	source denseBuffer
+	turns  int
+}
+
+func (s rotatedBufferDenseStructure) Dimensions() [3]int { return s.d }
+
+func (s rotatedBufferDenseStructure) At(x, y, z int, _ func(x, y, z int) world.Block) (world.Block, world.Liquid) {
+	// The structure is addressed relative to the rotated minimum, not the
+	// original source minimum.
+	rotated := cube.Pos{x, y, z}.Add(s.min)
+	original := rotateOffset(rotated, "y", (4-s.turns)%4)
+	entry := s.source.ordered[denseIndex(original, s.source.min, s.source.dims)]
+	return structureLayers(entry)
 }
 
 type uniformBlockStructure struct {
@@ -161,11 +201,44 @@ func writeDenseArea(tx *world.Tx, area geo.Area, blockAt func(cube.Pos) world.Bl
 // through BuildStructure. It returns false when entries are sparse or have
 // duplicate offsets, in which case callers should fall back to SetBlock writes.
 func writeDenseBuffer(tx *world.Tx, origin cube.Pos, entries []bufferEntry, batch *history.Batch) bool {
+	tDense := startTrace("writeDenseBuffer.makeDenseBuffer")
 	layout, ok := makeDenseBuffer(entries)
+	tDense.end()
+	if !ok {
+		traceAnnotate("writeDenseBuffer fast path skipped (entries not dense)")
+		return false
+	}
+	traceAnnotate("writeDenseBuffer fast path",
+		"layout_dims", layout.dims,
+		"layout_min", layout.min,
+		"ordered_len", len(layout.ordered),
+	)
+	writeDenseBufferLayout(tx, origin, layout, batch)
+	return true
+}
+
+func writeRotatedDenseBufferNoBatch(tx *world.Tx, origin cube.Pos, entries []bufferEntry, turns int) bool {
+	tDense := startTrace("writeRotatedDenseBuffer.makeRotatedDenseBuffer")
+	layout, ok := makeRotatedDenseBuffer(entries, turns)
+	tDense.end()
 	if !ok {
 		return false
 	}
-	writeDenseBufferLayout(tx, origin, layout, batch)
+	traceAnnotate("writeRotatedDenseBuffer fast path",
+		"layout_dims", layout.dims,
+		"layout_min", layout.min,
+		"ordered_len", len(layout.source.ordered),
+		"turns", layout.turns,
+	)
+	traceAnnotate("writeRotatedDense.no_batch fast path (zero-copy)", "cells", len(layout.source.ordered))
+	tBuild := startTrace("writeRotatedDense.tx.BuildStructure(no_batch)")
+	buildStructure(tx, origin.Add(layout.min), rotatedBufferDenseStructure{
+		min:    layout.min,
+		d:      layout.dims,
+		source: layout.source,
+		turns:  layout.turns,
+	})
+	tBuild.end()
 	return true
 }
 
@@ -176,16 +249,13 @@ func writeDenseBufferLayout(tx *world.Tx, origin cube.Pos, layout denseBuffer, b
 func writeDenseBufferLayoutScratch(tx *world.Tx, origin cube.Pos, layout denseBuffer, batch *history.Batch, denseEntries []denseBlockEntry) []denseBlockEntry {
 	n := len(layout.ordered)
 	if batch == nil {
-		if cap(denseEntries) < n {
-			denseEntries = make([]denseBlockEntry, n)
-		} else {
-			denseEntries = denseEntries[:n]
-		}
-		for i, entry := range layout.ordered {
-			block, liq := structureLayers(entry)
-			denseEntries[i] = denseBlockEntry{Pos: origin.Add(entry.Offset), Index: -1, Block: block, Liq: liq}
-		}
-		buildStructure(tx, origin.Add(layout.min), denseBlockStructure{d: layout.dims, entries: denseEntries})
+		// Skip the per-cell denseEntries copy entirely: BuildStructure walks
+		// our pre-XYZ-ordered []bufferEntry directly via bufferDenseStructure.
+		// Saves an O(n) ~5 GB allocation on a 90M-cell paste.
+		traceAnnotate("writeDense.no_batch fast path (zero-copy)", "cells", n)
+		tBuild := startTrace("writeDense.tx.BuildStructure(no_batch)")
+		buildStructure(tx, origin.Add(layout.min), bufferDenseStructure{d: layout.dims, entries: layout.ordered})
+		tBuild.end()
 		return denseEntries
 	}
 	batch.Grow(n)
@@ -267,6 +337,95 @@ func makeDenseBuffer(entries []bufferEntry) (denseBuffer, bool) {
 		ordered[i] = entry
 	}
 	return denseBuffer{min: lo, dims: dims, ordered: ordered}, true
+}
+
+func makeRotatedDenseBuffer(entries []bufferEntry, turns int) (rotatedDenseBuffer, bool) {
+	turns = ((turns % 4) + 4) % 4
+	if turns == 0 {
+		return rotatedDenseBuffer{}, false
+	}
+	source, ok := makeDenseBuffer(entries)
+	if !ok {
+		return rotatedDenseBuffer{}, false
+	}
+	min, max := rotatedBounds(source.min, sourceMax(source), turns)
+	return rotatedDenseBuffer{
+		min:    min,
+		dims:   [3]int{max[0] - min[0] + 1, max[1] - min[1] + 1, max[2] - min[2] + 1},
+		source: source,
+		turns:  turns,
+	}, true
+}
+
+func sourceMax(source denseBuffer) cube.Pos {
+	return cube.Pos{
+		source.min[0] + source.dims[0] - 1,
+		source.min[1] + source.dims[1] - 1,
+		source.min[2] + source.dims[2] - 1,
+	}
+}
+
+func rotatedBounds(srcMin, srcMax cube.Pos, turns int) (cube.Pos, cube.Pos) {
+	first := true
+	var lo, hi cube.Pos
+	for _, x := range []int{srcMin[0], srcMax[0]} {
+		for _, y := range []int{srcMin[1], srcMax[1]} {
+			for _, z := range []int{srcMin[2], srcMax[2]} {
+				p := rotateOffset(cube.Pos{x, y, z}, "y", turns)
+				if first {
+					lo, hi = p, p
+					first = false
+					continue
+				}
+				lo = cube.Pos{min(lo[0], p[0]), min(lo[1], p[1]), min(lo[2], p[2])}
+				hi = cube.Pos{max(hi[0], p[0]), max(hi[1], p[1]), max(hi[2], p[2])}
+			}
+		}
+	}
+	return lo, hi
+}
+
+func orderDenseEntriesInPlace(entries []bufferEntry) bool {
+	if len(entries) == 0 {
+		return false
+	}
+	lo, hi := entries[0].Offset, entries[0].Offset
+	for _, entry := range entries[1:] {
+		lo = cube.Pos{min(lo[0], entry.Offset[0]), min(lo[1], entry.Offset[1]), min(lo[2], entry.Offset[2])}
+		hi = cube.Pos{max(hi[0], entry.Offset[0]), max(hi[1], entry.Offset[1]), max(hi[2], entry.Offset[2])}
+	}
+	dims := [3]int{hi[0] - lo[0] + 1, hi[1] - lo[1] + 1, hi[2] - lo[2] + 1}
+	volume := dims[0] * dims[1] * dims[2]
+	if volume != len(entries) {
+		return false
+	}
+
+	targets := make([]int, len(entries))
+	seen := make([]bool, len(entries))
+	inOrder := true
+	for i, entry := range entries {
+		target := denseIndex(entry.Offset, lo, dims)
+		if seen[target] {
+			return false
+		}
+		seen[target] = true
+		targets[i] = target
+		if target != i {
+			inOrder = false
+		}
+	}
+	if inOrder {
+		return true
+	}
+
+	for i := range entries {
+		for targets[i] != i {
+			j := targets[i]
+			entries[i], entries[j] = entries[j], entries[i]
+			targets[i], targets[j] = targets[j], targets[i]
+		}
+	}
+	return true
 }
 
 func denseIndex(pos, min cube.Pos, dims [3]int) int {

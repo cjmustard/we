@@ -7,6 +7,7 @@ import (
 	"github.com/df-mc/dragonfly/server/world"
 	"github.com/df-mc/we/geo"
 	"github.com/df-mc/we/history"
+	"github.com/df-mc/we/parse"
 )
 
 // Clipboard is a captured selection used by copy, cut, paste, and schematic IO.
@@ -26,21 +27,136 @@ func CopySelection(tx *world.Tx, area geo.Area, origin cube.Pos, dir cube.Direct
 
 // PasteClipboard writes cb at origin, rotating around the Y axis to match dir.
 // Returns an error if the clipboard is empty. When noAir is true, air entries are skipped.
+//
+// PasteClipboard never mutates cb — when rotation is needed it copies the
+// entries first. For arena-scale clipboards where the copy is unaffordable,
+// use PasteClipboardConsuming instead, which rotates cb.Entries in place.
 func PasteClipboard(tx *world.Tx, cb *Clipboard, origin cube.Pos, dir cube.Direction, noAir bool, batch *history.Batch) error {
+	return pasteClipboardImpl(tx, cb, origin, dir, noAir, batch, false)
+}
+
+// PasteClipboardConsuming is the memory-efficient variant of PasteClipboard
+// for callers who own cb and don't need it preserved after the paste. It
+// rotates cb.Entries in place (saving a full slice copy — ~5 GB on a 90M-
+// cell schematic) and updates cb.OriginDir to match dir.
+func PasteClipboardConsuming(tx *world.Tx, cb *Clipboard, origin cube.Pos, dir cube.Direction, noAir bool, batch *history.Batch) error {
+	return pasteClipboardImpl(tx, cb, origin, dir, noAir, batch, true)
+}
+
+func pasteClipboardImpl(tx *world.Tx, cb *Clipboard, origin cube.Pos, dir cube.Direction, noAir bool, batch *history.Batch, consume bool) error {
 	if cb == nil || len(cb.Entries) == 0 {
 		return fmt.Errorf("clipboard is empty")
 	}
+	traceAnnotate("PasteClipboard begin",
+		"cells", len(cb.Entries),
+		"origin_dir", cb.OriginDir.String(),
+		"paste_dir", dir.String(),
+		"no_air", noAir,
+		"with_history", batch != nil,
+		"consume", consume,
+	)
 	turns := rotationTurns(cb.OriginDir, dir)
 	entries := cb.Entries
 	if turns != 0 {
-		entries = make([]bufferEntry, len(cb.Entries))
-		copy(entries, cb.Entries)
-		for i := range entries {
-			entries[i].Offset = rotateOffset(entries[i].Offset, "y", turns)
+		if consume && !noAir && batch == nil {
+			tRot := startTrace("PasteClipboard.rotation_blocks_in_place")
+			transformEntryBlocksInPlace(entries, turns)
+			cb.OriginDir = dir
+			tRot.end()
+
+			tPaste := startTrace("PasteClipboard.pasteBuffer")
+			if writeRotatedDenseBufferNoBatch(tx, origin, entries, turns) {
+				tPaste.end()
+				releaseConsumedClipboard(cb, consume)
+				return nil
+			}
+			traceAnnotate("writeRotatedDenseBuffer fast path skipped (entries not dense)")
+			tPaste.end()
+
+			tOffset := startTrace("PasteClipboard.rotation_offsets_in_place")
+			rotateEntryOffsetsInPlace(entries, turns)
+			tOffset.end()
+		} else if consume {
+			tRot := startTrace("PasteClipboard.rotation_in_place")
+			rotateEntriesInPlace(cb.Entries, turns)
+			cb.OriginDir = dir
+			tRot.end()
+		} else {
+			tRot := startTrace("PasteClipboard.rotation_copy")
+			entries = make([]bufferEntry, len(cb.Entries))
+			copy(entries, cb.Entries)
+			rotateEntriesInPlace(entries, turns)
+			tRot.end()
+		}
+	} else {
+		traceAnnotate("PasteClipboard.rotation_skipped (turns=0)")
+	}
+	if consume && !noAir {
+		tOrder := startTrace("PasteClipboard.order_dense_in_place")
+		if !orderDenseEntriesInPlace(entries) {
+			traceAnnotate("PasteClipboard.order_dense_in_place skipped (entries not dense)")
+		}
+		tOrder.end()
+	}
+	tPaste := startTrace("PasteClipboard.pasteBuffer")
+	pasteBuffer(tx, origin, entries, noAir, batch)
+	tPaste.end()
+	releaseConsumedClipboard(cb, consume)
+	return nil
+}
+
+func releaseConsumedClipboard(cb *Clipboard, consume bool) {
+	if consume {
+		cb.Entries = nil
+	}
+}
+
+func rotateEntriesInPlace(entries []bufferEntry, turns int) {
+	rotateEntryOffsetsInPlace(entries, turns)
+	transformEntryBlocksInPlace(entries, turns)
+}
+
+func rotateEntryOffsetsInPlace(entries []bufferEntry, turns int) {
+	for i := range entries {
+		entries[i].Offset = rotateOffset(entries[i].Offset, "y", turns)
+	}
+}
+
+func transformEntryBlocksInPlace(entries []bufferEntry, turns int) {
+	transform := blockTransform{axis: "y", turns: turns}
+	cache := make(blockTransformCache)
+	for i := range entries {
+		entries[i].Block = cache.transform(entries[i].Block, transform)
+		if entries[i].HasLiq {
+			if b, ok := cache.transform(entries[i].Liquid, transform).(world.Liquid); ok {
+				entries[i].Liquid = b
+			}
 		}
 	}
-	pasteBuffer(tx, origin, entries, noAir, batch)
-	return nil
+}
+
+// PasteSubChunkCount returns how many unique 16x16x16 sub-chunks a paste would
+// touch. It mirrors PasteClipboard's rotation and -a air skipping so service
+// guardrails can reject pathological pastes before Dragonfly queues too many
+// client-cache blobs for one player.
+func PasteSubChunkCount(cb *Clipboard, origin cube.Pos, dir cube.Direction, noAir bool) int64 {
+	if cb == nil || len(cb.Entries) == 0 {
+		return 0
+	}
+	turns := rotationTurns(cb.OriginDir, dir)
+	seen := make(map[[3]int32]struct{})
+	for _, entry := range cb.Entries {
+		if noAir && parse.IsAir(entry.Block) && !entry.HasLiq {
+			continue
+		}
+		offset := entry.Offset
+		if turns != 0 {
+			offset = rotateOffset(offset, "y", turns)
+		}
+		pos := origin.Add(offset)
+		seen[[3]int32{int32(pos[0] >> 4), int32(pos[1] >> 4), int32(pos[2] >> 4)}] = struct{}{}
+	}
+	return int64(len(seen))
 }
 
 func rotationTurns(from, to cube.Direction) int {

@@ -1,6 +1,7 @@
 package edit
 
 import (
+	"maps"
 	"math"
 	"math/rand"
 	"strings"
@@ -23,6 +24,7 @@ type BlockMask struct {
 	Blocks     []world.Block
 
 	keys      map[parse.BlockKey]struct{}
+	names     map[string]struct{}
 	airListed bool
 }
 
@@ -46,11 +48,23 @@ func (m BlockMask) Match(b world.Block) bool {
 		return false
 	}
 	if m.keys != nil {
-		_, ok := m.keys[parse.BlockKeyOf(b)]
-		return ok
+		if _, ok := m.keys[parse.BlockKeyOf(b)]; ok {
+			return true
+		}
+		if m.names != nil {
+			name, _ := b.EncodeBlock()
+			_, ok := m.names[name]
+			return ok
+		}
+		return false
 	}
 	for _, want := range m.Blocks {
 		if parse.SameBlock(b, want) {
+			return true
+		}
+		wantName, _ := want.EncodeBlock()
+		gotName, _ := b.EncodeBlock()
+		if wantName == gotName {
 			return true
 		}
 	}
@@ -64,11 +78,14 @@ func (m BlockMask) Prepared() BlockMask {
 		return m
 	}
 	m.keys = make(map[parse.BlockKey]struct{}, len(m.Blocks))
+	m.names = make(map[string]struct{}, len(m.Blocks))
 	for _, b := range m.Blocks {
 		if parse.IsAir(b) {
 			m.airListed = true
 		}
 		m.keys[parse.BlockKeyOf(b)] = struct{}{}
+		name, _ := b.EncodeBlock()
+		m.names[name] = struct{}{}
 	}
 	return m
 }
@@ -77,6 +94,10 @@ func (m BlockMask) Prepared() BlockMask {
 func ParseMask(spec string) (BlockMask, error) {
 	spec = strings.TrimSpace(spec)
 	if strings.EqualFold(spec, "all") {
+		return BlockMask{All: true}, nil
+	}
+	switch strings.ToLower(spec) {
+	case "everything", "all+air", "all_air", "*":
 		return BlockMask{All: true, IncludeAir: true}, nil
 	}
 	spec = strings.TrimPrefix(spec, "only:")
@@ -140,37 +161,71 @@ func Walls(tx *world.Tx, area geo.Area, blocks []world.Block, batch *history.Bat
 }
 
 // ReplaceArea swaps blocks matching mask inside area for picks from to.
-func ReplaceArea(tx *world.Tx, area geo.Area, mask BlockMask, to []world.Block, batch *history.Batch) {
+func ReplaceArea(tx *world.Tx, area geo.Area, mask BlockMask, to []world.Block, batch *history.Batch) int {
 	mask = mask.Prepared()
 	if batch != nil {
 		batch.Grow(int(area.Volume()))
 	}
+	changed := 0
 	area.Range(func(x, y, z int) {
 		pos := cube.Pos{x, y, z}
-		if mask.Match(tx.Block(pos)) {
-			setBlockOrBatch(tx, batch, pos, ChooseBlock(to, nil))
+		block := tx.Block(pos)
+		if mask.Match(block) {
+			setBlockOrBatch(tx, batch, pos, replacementBlock(block, ChooseBlock(to, nil)))
+			changed++
 		}
 	})
+	return changed
 }
 
 // ReplaceNear runs ReplaceArea inside a sphere of the given radius around center.
-func ReplaceNear(tx *world.Tx, center cube.Pos, radius int, mask BlockMask, to []world.Block, batch *history.Batch) {
+func ReplaceNear(tx *world.Tx, center cube.Pos, radius int, mask BlockMask, to []world.Block, batch *history.Batch) int {
 	mask = mask.Prepared()
 	r2 := radius * radius
 	area := geo.NewArea(center[0]-radius, center[1]-radius, center[2]-radius, center[0]+radius, center[1]+radius, center[2]+radius)
 	if batch != nil {
 		batch.Grow(int(area.Volume()))
 	}
+	changed := 0
 	area.Range(func(x, y, z int) {
 		dx, dy, dz := x-center[0], y-center[1], z-center[2]
 		if dx*dx+dy*dy+dz*dz > r2 {
 			return
 		}
 		pos := cube.Pos{x, y, z}
-		if mask.Match(tx.Block(pos)) {
-			setBlockOrBatch(tx, batch, pos, ChooseBlock(to, nil))
+		block := tx.Block(pos)
+		if mask.Match(block) {
+			setBlockOrBatch(tx, batch, pos, replacementBlock(block, ChooseBlock(to, nil)))
+			changed++
 		}
 	})
+	return changed
+}
+
+func replacementBlock(source, target world.Block) world.Block {
+	if source == nil || target == nil {
+		return target
+	}
+	sourceName, sourceProps := source.EncodeBlock()
+	targetName, targetProps := target.EncodeBlock()
+	if sourceName == targetName || len(sourceProps) == 0 || len(targetProps) == 0 {
+		return target
+	}
+	merged := maps.Clone(targetProps)
+	changed := false
+	for key := range merged {
+		if value, ok := sourceProps[key]; ok {
+			merged[key] = value
+			changed = true
+		}
+	}
+	if !changed {
+		return target
+	}
+	if block, ok := world.BlockByName(targetName, merged); ok {
+		return block
+	}
+	return target
 }
 
 // TopLayer replaces only the topmost matching block in each (x, z) column of area.
@@ -411,6 +466,8 @@ func RotateCopy(tx *world.Tx, area geo.Area, degrees int, axis string, batch *hi
 	axis = strings.ToLower(axis)
 	turns := ((degrees/90)%4 + 4) % 4
 	center := cube.Pos{(area.Dx() - 1) / 2, (area.Dy() - 1) / 2, (area.Dz() - 1) / 2}
+	transform := blockTransform{axis: axis, turns: turns}
+	cache := make(blockTransformCache)
 	for i := range entries {
 		o := entries[i].Offset.Sub(center)
 		for t := 0; t < turns; t++ {
@@ -424,6 +481,12 @@ func RotateCopy(tx *world.Tx, area geo.Area, degrees int, axis string, batch *hi
 			}
 		}
 		entries[i].Offset = o.Add(center)
+		entries[i].Block = cache.transform(entries[i].Block, transform)
+		if entries[i].HasLiq {
+			if l, ok := cache.transform(entries[i].Liquid, transform).(world.Liquid); ok {
+				entries[i].Liquid = l
+			}
+		}
 	}
 	pasteBuffer(tx, area.Min, entries, false, batch)
 }
@@ -431,9 +494,12 @@ func RotateCopy(tx *world.Tx, area geo.Area, degrees int, axis string, batch *hi
 // FlipCopy mirrors blocks inside area across axis (x, y, or z).
 func FlipCopy(tx *world.Tx, area geo.Area, axis string, batch *history.Batch) {
 	entries := copyArea(tx, area, area.Min, BlockMask{All: true, IncludeAir: true}, true)
+	axis = strings.ToLower(axis)
+	transform := blockTransform{axis: axis, flip: true}
+	cache := make(blockTransformCache)
 	for i := range entries {
 		o := entries[i].Offset
-		switch strings.ToLower(axis) {
+		switch axis {
 		case "y":
 			o[1] = area.Dy() - 1 - o[1]
 		case "z":
@@ -442,6 +508,12 @@ func FlipCopy(tx *world.Tx, area geo.Area, axis string, batch *history.Batch) {
 			o[0] = area.Dx() - 1 - o[0]
 		}
 		entries[i].Offset = o
+		entries[i].Block = cache.transform(entries[i].Block, transform)
+		if entries[i].HasLiq {
+			if l, ok := cache.transform(entries[i].Liquid, transform).(world.Liquid); ok {
+				entries[i].Liquid = l
+			}
+		}
 	}
 	pasteBuffer(tx, area.Min, entries, false, batch)
 }

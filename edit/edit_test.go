@@ -6,10 +6,10 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
-	_ "unsafe"
 
 	mcblock "github.com/df-mc/dragonfly/server/block"
 	"github.com/df-mc/dragonfly/server/block/cube"
+	"github.com/df-mc/dragonfly/server/item"
 	"github.com/df-mc/dragonfly/server/world"
 	_ "github.com/df-mc/dragonfly/server/world/biome"
 	"github.com/df-mc/we/edit"
@@ -18,12 +18,8 @@ import (
 	"github.com/df-mc/we/parse"
 )
 
-//go:linkname finaliseBlockRegistry github.com/df-mc/dragonfly/server/world.finaliseBlockRegistry
-func finaliseBlockRegistry()
-
 func withTx(t *testing.T, f func(tx *world.Tx)) {
 	t.Helper()
-	finaliseBlockRegistry()
 	w := world.New()
 	defer func() {
 		if err := w.Close(); err != nil {
@@ -215,6 +211,37 @@ func TestClipboardPasteNoAirKeepsExistingBlocks(t *testing.T) {
 	})
 }
 
+func TestPasteRotatesDirectionalBlockState(t *testing.T) {
+	withTx(t, func(tx *world.Tx) {
+		tx.SetBlock(cube.Pos{0, 0, 0}, mcblock.Furnace{Facing: cube.North}, nil)
+		cb := edit.CopySelection(tx, geo.NewArea(0, 0, 0, 0, 0, 0), cube.Pos{0, 0, 0}, cube.North, edit.BlockMask{All: true, IncludeAir: true}, false)
+		if err := edit.PasteClipboard(tx, cb, cube.Pos{10, 0, 0}, cube.East, false, history.NewBatch(false)); err != nil {
+			t.Fatalf("PasteClipboard: %v", err)
+		}
+		furnace, ok := tx.Block(cube.Pos{10, 0, 0}).(mcblock.Furnace)
+		if !ok || furnace.Facing != cube.East {
+			t.Fatalf("pasted block = %#v, want east-facing furnace", tx.Block(cube.Pos{10, 0, 0}))
+		}
+	})
+}
+
+func TestRotateClipboardTransformsDirectionalBlockState(t *testing.T) {
+	withTx(t, func(tx *world.Tx) {
+		tx.SetBlock(cube.Pos{0, 0, 0}, mcblock.Stairs{Facing: cube.North, Block: mcblock.Cobblestone{}}, nil)
+		cb := edit.CopySelection(tx, geo.NewArea(0, 0, 0, 0, 0, 0), cube.Pos{0, 0, 0}, cube.North, edit.BlockMask{All: true, IncludeAir: true}, false)
+		if err := edit.RotateClipboard(cb, 90, "y"); err != nil {
+			t.Fatalf("RotateClipboard: %v", err)
+		}
+		if err := edit.PasteClipboard(tx, cb, cube.Pos{10, 0, 0}, cube.North, false, history.NewBatch(false)); err != nil {
+			t.Fatalf("PasteClipboard: %v", err)
+		}
+		stairs, ok := tx.Block(cube.Pos{10, 0, 0}).(mcblock.Stairs)
+		if !ok || stairs.Facing != cube.East {
+			t.Fatalf("pasted block = %#v, want east-facing stairs", tx.Block(cube.Pos{10, 0, 0}))
+		}
+	})
+}
+
 func TestClipboardDensePastePreservesOffsetsLiquidsAndUndo(t *testing.T) {
 	var failure string
 	withTx(t, func(tx *world.Tx) {
@@ -335,6 +362,29 @@ func TestSchematicRoundTrip(t *testing.T) {
 	})
 }
 
+func TestSchematicRoundTripPreservesBlockState(t *testing.T) {
+	store := edit.NewFileSchematicStore(filepath.Join(t.TempDir(), "schematics"))
+
+	withTx(t, func(tx *world.Tx) {
+		tx.SetBlock(cube.Pos{0, 0, 0}, mcblock.Furnace{Facing: cube.West}, nil)
+		cb := edit.CopySelection(tx, geo.NewArea(0, 0, 0, 0, 0, 0), cube.Pos{0, 0, 0}, cube.North, edit.BlockMask{All: true, IncludeAir: true}, false)
+		if err := store.Save("furnace", cb); err != nil {
+			t.Fatalf("SaveSchematic: %v", err)
+		}
+		loaded, err := store.Load("furnace")
+		if err != nil {
+			t.Fatalf("LoadSchematic: %v", err)
+		}
+		if err := edit.PasteClipboard(tx, loaded, cube.Pos{5, 0, 0}, cube.North, false, history.NewBatch(false)); err != nil {
+			t.Fatalf("PasteClipboard: %v", err)
+		}
+		furnace, ok := tx.Block(cube.Pos{5, 0, 0}).(mcblock.Furnace)
+		if !ok || furnace.Facing != cube.West {
+			t.Fatalf("loaded schematic block = %#v, want west-facing furnace", tx.Block(cube.Pos{5, 0, 0}))
+		}
+	})
+}
+
 func TestReplaceMaskCanExplicitlyTargetAir(t *testing.T) {
 	withTx(t, func(tx *world.Tx) {
 		area := geo.NewArea(0, 0, 0, 1, 0, 0)
@@ -352,6 +402,104 @@ func TestReplaceMaskCanExplicitlyTargetAir(t *testing.T) {
 		if !parse.SameBlock(tx.Block(cube.Pos{1, 0, 0}), mcblock.Dirt{}) {
 			t.Fatal("explicit air mask replaced non-air")
 		}
+	})
+}
+
+func TestReplaceAllMaskSkipsAir(t *testing.T) {
+	withTx(t, func(tx *world.Tx) {
+		area := geo.NewArea(0, 0, 0, 1, 0, 0)
+		tx.SetBlock(cube.Pos{0, 0, 0}, mcblock.Air{}, nil)
+		tx.SetBlock(cube.Pos{1, 0, 0}, mcblock.Dirt{}, nil)
+		mask, err := edit.ParseMask("all")
+		if err != nil {
+			t.Fatalf("ParseMask: %v", err)
+		}
+		batch := history.NewBatch(false)
+		edit.ReplaceArea(tx, area, mask, []world.Block{mcblock.Stone{}}, batch)
+		if !parse.IsAir(tx.Block(cube.Pos{0, 0, 0})) {
+			t.Fatal("all mask replaced air")
+		}
+		if !parse.SameBlock(tx.Block(cube.Pos{1, 0, 0}), mcblock.Stone{}) {
+			t.Fatal("all mask did not replace non-air block")
+		}
+	})
+}
+
+func TestReplaceEverythingMaskIncludesAir(t *testing.T) {
+	withTx(t, func(tx *world.Tx) {
+		area := geo.NewArea(0, 0, 0, 1, 0, 0)
+		tx.SetBlock(cube.Pos{0, 0, 0}, mcblock.Air{}, nil)
+		tx.SetBlock(cube.Pos{1, 0, 0}, mcblock.Dirt{}, nil)
+		mask, err := edit.ParseMask("everything")
+		if err != nil {
+			t.Fatalf("ParseMask: %v", err)
+		}
+		batch := history.NewBatch(false)
+		edit.ReplaceArea(tx, area, mask, []world.Block{mcblock.Stone{}}, batch)
+		if !parse.SameBlock(tx.Block(cube.Pos{0, 0, 0}), mcblock.Stone{}) {
+			t.Fatal("everything mask did not replace air")
+		}
+		if !parse.SameBlock(tx.Block(cube.Pos{1, 0, 0}), mcblock.Stone{}) {
+			t.Fatal("everything mask did not replace non-air block")
+		}
+	})
+}
+
+func TestReplaceMaskMatchesAllStatesForNamedBlock(t *testing.T) {
+	withTx(t, func(tx *world.Tx) {
+		area := geo.NewArea(0, 0, 0, 2, 0, 0)
+		tx.SetBlock(cube.Pos{0, 0, 0}, mcblock.GlazedTerracotta{Colour: item.ColourBlue(), Facing: cube.North}, nil)
+		tx.SetBlock(cube.Pos{1, 0, 0}, mcblock.GlazedTerracotta{Colour: item.ColourBlue(), Facing: cube.East}, nil)
+		tx.SetBlock(cube.Pos{2, 0, 0}, mcblock.GlazedTerracotta{Colour: item.ColourPurple(), Facing: cube.North}, nil)
+		mask, err := edit.ParseMask("blue_glazed_terracotta")
+		if err != nil {
+			t.Fatalf("ParseMask: %v", err)
+		}
+
+		changed := edit.ReplaceArea(tx, area, mask, []world.Block{mcblock.Stone{}}, nil)
+		if changed != 2 {
+			t.Fatalf("changed = %d, want 2 blue glazed states", changed)
+		}
+		if !parse.SameBlock(tx.Block(cube.Pos{0, 0, 0}), mcblock.Stone{}) {
+			t.Fatal("north-facing blue glazed terracotta was not replaced")
+		}
+		if !parse.SameBlock(tx.Block(cube.Pos{1, 0, 0}), mcblock.Stone{}) {
+			t.Fatal("east-facing blue glazed terracotta was not replaced")
+		}
+		if got, ok := tx.Block(cube.Pos{2, 0, 0}).(mcblock.GlazedTerracotta); !ok || got.Colour != item.ColourPurple() {
+			t.Fatalf("non-blue glazed terracotta changed to %#v", tx.Block(cube.Pos{2, 0, 0}))
+		}
+	})
+}
+
+func TestReplacePreservesCompatibleTargetState(t *testing.T) {
+	withTx(t, func(tx *world.Tx) {
+		area := geo.NewArea(0, 0, 0, 1, 0, 0)
+		first := mcblock.GlazedTerracotta{Colour: item.ColourBlue(), Facing: cube.North}
+		second := mcblock.GlazedTerracotta{Colour: item.ColourBlue(), Facing: cube.East}
+		tx.SetBlock(cube.Pos{0, 0, 0}, first, nil)
+		tx.SetBlock(cube.Pos{1, 0, 0}, second, nil)
+		mask, err := edit.ParseMask("blue_glazed_terracotta")
+		if err != nil {
+			t.Fatalf("ParseMask: %v", err)
+		}
+
+		changed := edit.ReplaceArea(tx, area, mask, []world.Block{mcblock.GlazedTerracotta{Colour: item.ColourPurple()}}, nil)
+		if changed != 2 {
+			t.Fatalf("changed = %d, want 2", changed)
+		}
+		assertGlazed := func(pos cube.Pos, wantFacing cube.Direction) {
+			t.Helper()
+			got, ok := tx.Block(pos).(mcblock.GlazedTerracotta)
+			if !ok {
+				t.Fatalf("block at %v = %#v, want glazed terracotta", pos, tx.Block(pos))
+			}
+			if got.Colour != item.ColourPurple() || got.Facing != wantFacing {
+				t.Fatalf("block at %v = colour %v facing %v, want purple facing %v", pos, got.Colour, got.Facing, wantFacing)
+			}
+		}
+		assertGlazed(cube.Pos{0, 0, 0}, first.Facing)
+		assertGlazed(cube.Pos{1, 0, 0}, second.Facing)
 	})
 }
 
@@ -419,15 +567,30 @@ func TestFileSchematicStoreListAndDelete(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(store.Dir, "notes.txt"), []byte("ignore"), 0o644); err != nil {
 		t.Fatalf("write non-schematic file: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(store.Dir, "java.schem"), []byte("schem"), 0o644); err != nil {
+		t.Fatalf("write java schematic file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(store.Dir, "alpha.schematic"), []byte("legacy"), 0o644); err != nil {
+		t.Fatalf("write duplicate legacy schematic file: %v", err)
+	}
 	names, err := store.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if !reflect.DeepEqual(names, []string{"alpha", "beta"}) {
-		t.Fatalf("names = %v, want [alpha beta]", names)
+	if !reflect.DeepEqual(names, []string{"alpha", "beta", "java"}) {
+		t.Fatalf("names = %v, want [alpha beta java]", names)
 	}
 	if err := store.Delete("alpha"); err != nil {
 		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(store.Dir, "alpha.schematic")); !os.IsNotExist(err) {
+		t.Fatalf("Delete alpha left duplicate .schematic file: %v", err)
+	}
+	if err := store.Delete("java"); err != nil {
+		t.Fatalf("Delete java .schem: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(store.Dir, "java.schem")); !os.IsNotExist(err) {
+		t.Fatalf("Delete java left .schem file: %v", err)
 	}
 	names, err = store.List()
 	if err != nil {

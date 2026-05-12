@@ -2,10 +2,10 @@ package service_test
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
-	_ "unsafe"
 
 	mcblock "github.com/df-mc/dragonfly/server/block"
 	"github.com/df-mc/dragonfly/server/block/cube"
@@ -18,9 +18,6 @@ import (
 	"github.com/df-mc/we/parse"
 	"github.com/df-mc/we/service"
 )
-
-//go:linkname finaliseBlockRegistry github.com/df-mc/dragonfly/server/world.finaliseBlockRegistry
-func finaliseBlockRegistry()
 
 type fakeSession struct {
 	area       geo.Area
@@ -55,7 +52,6 @@ func (s *fakeSession) Redo(tx *world.Tx, brush bool) bool { return s.history.Red
 
 func withTx(t *testing.T, f func(tx *world.Tx)) {
 	t.Helper()
-	finaliseBlockRegistry()
 	w := world.New()
 	defer func() {
 		if err := w.Close(); err != nil {
@@ -103,6 +99,17 @@ func TestSetRecordsUndoableChanges(t *testing.T) {
 	})
 }
 
+func TestSetSubChunkGuardrailRejectsLargeSelection(t *testing.T) {
+	withTx(t, func(tx *world.Tx) {
+		s := newFakeSession(geo.NewArea(0, 0, 0, 16, 0, 0))
+		s.guardrails = guardrail.Limits{MaxEditSubChunks: 1}
+
+		if _, err := service.Set(tx, s, "stone"); err == nil || !strings.Contains(err.Error(), "edit touches 2 sub-chunks") {
+			t.Fatalf("Set error = %v, want edit sub-chunk limit", err)
+		}
+	})
+}
+
 func TestSetWithNoUndoWritesWithoutRecording(t *testing.T) {
 	withTx(t, func(tx *world.Tx) {
 		area := geo.NewArea(0, 0, 0, 1, 0, 0)
@@ -132,6 +139,23 @@ func TestSetWithNoUndoWritesWithoutRecording(t *testing.T) {
 				t.Fatalf("undo reverted no-undo set at %v", cube.Pos{x, y, z})
 			}
 		})
+	})
+}
+
+func TestSetRejectsHugeUndoableSelection(t *testing.T) {
+	withTx(t, func(tx *world.Tx) {
+		s := newFakeSession(geo.NewArea(0, 0, 0, 1_000_000, 0, 0))
+
+		_, err := service.Set(tx, s, "air")
+		if err == nil {
+			t.Fatal("Set succeeded, want large undo guard error")
+		}
+		if !strings.Contains(err.Error(), "-noundo") {
+			t.Fatalf("Set error = %v, want -noundo hint", err)
+		}
+		if s.records != 0 {
+			t.Fatalf("Record called %d times, want 0", s.records)
+		}
 	})
 }
 
@@ -215,8 +239,8 @@ func TestReplaceWithNoUndoWritesWithoutRecording(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result.Changed != 2 {
-			t.Fatalf("changed = %d, want selected volume 2", result.Changed)
+		if result.Changed != 1 {
+			t.Fatalf("changed = %d, want matched count 1", result.Changed)
 		}
 		if s.records != 0 {
 			t.Fatalf("Record called %d times, want 0", s.records)
@@ -229,7 +253,6 @@ func TestReplaceWithNoUndoWritesWithoutRecording(t *testing.T) {
 		}
 	})
 }
-
 func TestCopyPasteNoAirKeepsExistingBlocks(t *testing.T) {
 	withTx(t, func(tx *world.Tx) {
 		s := newFakeSession(geo.NewArea(0, 0, 0, 1, 0, 0))
@@ -260,7 +283,40 @@ func TestCopyPasteNoAirKeepsExistingBlocks(t *testing.T) {
 	})
 }
 
-func TestCopyPasteAnchorsSelectionAtCenter(t *testing.T) {
+func TestPasteSubChunkGuardrailRejectsSparsePaste(t *testing.T) {
+	withTx(t, func(tx *world.Tx) {
+		source := geo.NewArea(0, 0, 0, 16, 0, 0)
+		s := newFakeSession(source)
+		s.guardrails = guardrail.Limits{MaxEditSubChunks: 1}
+		tx.SetBlock(cube.Pos{0, 0, 0}, mcblock.Stone{}, nil)
+		tx.SetBlock(cube.Pos{16, 0, 0}, mcblock.Stone{}, nil)
+		if _, err := service.Copy(tx, s, cube.Pos{}, cube.North, []string{"only", "stone"}); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := service.Paste(tx, s, cube.Pos{0, 0, 16}, cube.North, nil); err == nil || !strings.Contains(err.Error(), "edit touches 2 sub-chunks") {
+			t.Fatalf("Paste error = %v, want paste sub-chunk limit", err)
+		}
+	})
+}
+
+func TestPasteSubChunkGuardrailHonoursNoAir(t *testing.T) {
+	withTx(t, func(tx *world.Tx) {
+		source := geo.NewArea(0, 0, 0, 16, 0, 0)
+		s := newFakeSession(source)
+		s.guardrails = guardrail.Limits{MaxEditSubChunks: 1}
+		tx.SetBlock(cube.Pos{0, 0, 0}, mcblock.Stone{}, nil)
+		if _, err := service.Copy(tx, s, cube.Pos{}, cube.North, nil); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := service.Paste(tx, s, cube.Pos{0, 0, 16}, cube.North, []string{"-a"}); err != nil {
+			t.Fatalf("Paste with -a error = %v, want air entries ignored by guardrail", err)
+		}
+	})
+}
+
+func TestCopyPasteUsesCopyPositionAsPasteAnchor(t *testing.T) {
 	withTx(t, func(tx *world.Tx) {
 		s := newFakeSession(geo.NewArea(-1, 0, 0, 1, 0, 0))
 		tx.SetBlock(cube.Pos{-1, 0, 0}, mcblock.Stone{}, nil)
@@ -274,19 +330,19 @@ func TestCopyPasteAnchorsSelectionAtCenter(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if !parse.SameBlock(tx.Block(cube.Pos{9, 0, 0}), mcblock.Stone{}) {
-			t.Fatal("left side did not paste one block before target")
+		if !parse.SameBlock(tx.Block(cube.Pos{10, 0, 0}), mcblock.Stone{}) {
+			t.Fatal("copy-position block did not paste at target")
 		}
-		if !parse.SameBlock(tx.Block(cube.Pos{10, 0, 0}), mcblock.Gold{}) {
-			t.Fatal("selection center did not paste at target")
+		if !parse.SameBlock(tx.Block(cube.Pos{11, 0, 0}), mcblock.Gold{}) {
+			t.Fatal("middle block did not paste at its copied offset")
 		}
-		if !parse.SameBlock(tx.Block(cube.Pos{11, 0, 0}), mcblock.Dirt{}) {
-			t.Fatal("right side did not paste one block after target")
+		if !parse.SameBlock(tx.Block(cube.Pos{12, 0, 0}), mcblock.Dirt{}) {
+			t.Fatal("right side did not paste two blocks after target")
 		}
 	})
 }
 
-func TestCopyPasteEvenSelectionAnchorIsStableForNegativeCoordinates(t *testing.T) {
+func TestCopyPastePreservesRelativeOffsetFromCopyPosition(t *testing.T) {
 	withTx(t, func(tx *world.Tx) {
 		s := newFakeSession(geo.NewArea(-2, 0, 0, -1, 0, 0))
 		tx.SetBlock(cube.Pos{-2, 0, 0}, mcblock.Stone{}, nil)
@@ -306,7 +362,7 @@ func TestCopyPasteEvenSelectionAnchorIsStableForNegativeCoordinates(t *testing.T
 			t.Fatal("upper block did not paste after target")
 		}
 		if !parse.IsAir(tx.Block(cube.Pos{9, 0, 0})) {
-			t.Fatal("negative even-width selection pasted one block before target")
+			t.Fatal("clipboard pasted before the copied offset")
 		}
 	})
 }
@@ -389,6 +445,78 @@ func TestSchematicRoundTrip(t *testing.T) {
 			t.Fatal("schematic paste did not restore saved block")
 		}
 	})
+}
+
+func TestSchematicPasteNoUndoUsesCompactJavaFastPath(t *testing.T) {
+	var failure string
+	withTx(t, func(tx *world.Tx) {
+		compact, err := edit.NewCompactSchematic(2, 1, 1)
+		if err != nil {
+			failure = err.Error()
+			return
+		}
+		if err := compact.AddBlock(cube.Pos{0, 0, 0}, mcblock.Stone{}, nil); err != nil {
+			failure = err.Error()
+			return
+		}
+		if err := compact.AddBlock(cube.Pos{1, 0, 0}, mcblock.Dirt{}, nil); err != nil {
+			failure = err.Error()
+			return
+		}
+		store := &compactOnlyStore{compact: compact}
+		s := newFakeSession(geo.NewArea(0, 0, 0, 0, 0, 0))
+
+		pasted, err := service.Schematic(tx, s, cube.Pos{5, 0, 0}, cube.North, store, []string{"paste", "arena", "-noundo"})
+		if err != nil {
+			failure = err.Error()
+			return
+		}
+		if pasted.Changed != 2 {
+			failure = fmt.Sprintf("changed = %d, want 2", pasted.Changed)
+			return
+		}
+		if store.loadCalled {
+			failure = "compact no-undo paste fell back to clipboard Load"
+			return
+		}
+		if !store.compactCalled {
+			failure = "compact no-undo paste did not call compact loader"
+			return
+		}
+		if !parse.SameBlock(tx.Block(cube.Pos{5, 0, 0}), mcblock.Stone{}) {
+			failure = fmt.Sprintf("compact paste missed stone, got %T", tx.Block(cube.Pos{5, 0, 0}))
+			return
+		}
+		if !parse.SameBlock(tx.Block(cube.Pos{6, 0, 0}), mcblock.Dirt{}) {
+			failure = fmt.Sprintf("compact paste missed dirt, got %T", tx.Block(cube.Pos{6, 0, 0}))
+			return
+		}
+	})
+	if failure != "" {
+		t.Fatal(failure)
+	}
+}
+
+type compactOnlyStore struct {
+	compact       *edit.CompactSchematic
+	loadCalled    bool
+	compactCalled bool
+}
+
+func (s *compactOnlyStore) Save(string, *edit.Clipboard) error { return nil }
+
+func (s *compactOnlyStore) Load(string) (*edit.Clipboard, error) {
+	s.loadCalled = true
+	return nil, errors.New("clipboard load should not be called")
+}
+
+func (s *compactOnlyStore) Delete(string) error { return nil }
+
+func (s *compactOnlyStore) List() ([]string, error) { return nil, nil }
+
+func (s *compactOnlyStore) LoadCompactJavaSchematic(string) (*edit.CompactSchematic, edit.JavaSchematicReport, bool, error) {
+	s.compactCalled = true
+	return s.compact, edit.JavaSchematicReport{Width: 2, Height: 1, Length: 1}, true, nil
 }
 
 func TestReplaceOnlyMatchingBlocks(t *testing.T) {
@@ -510,6 +638,25 @@ func TestMoveShiftsSelectionAndClearsSource(t *testing.T) {
 	})
 }
 
+func TestMoveSubChunkGuardrailCountsOnlySourceAndDestination(t *testing.T) {
+	withTx(t, func(tx *world.Tx) {
+		s := newFakeSession(geo.NewArea(0, 0, 0, 0, 0, 0))
+		s.guardrails = guardrail.Limits{MaxEditSubChunks: 2}
+		tx.SetBlock(cube.Pos{0, 0, 0}, mcblock.Stone{}, nil)
+
+		result, err := service.Move(tx, s, cube.Pos{1, 0, 0}, []string{"all", "256"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Changed != 2 {
+			t.Fatalf("changed = %d, want 2", result.Changed)
+		}
+		if !parse.SameBlock(tx.Block(cube.Pos{256, 0, 0}), mcblock.Stone{}) {
+			t.Fatal("destination block was not moved")
+		}
+	})
+}
+
 func TestStackCopiesSelectionByAreaSize(t *testing.T) {
 	withTx(t, func(tx *world.Tx) {
 		s := newFakeSession(geo.NewArea(0, 0, 0, 1, 0, 0))
@@ -528,6 +675,27 @@ func TestStackCopiesSelectionByAreaSize(t *testing.T) {
 		}
 		if !parse.SameBlock(tx.Block(cube.Pos{3, 0, 0}), mcblock.Dirt{}) {
 			t.Fatal("second stacked block mismatch")
+		}
+	})
+}
+
+func TestStackCopiesSelectionUp(t *testing.T) {
+	withTx(t, func(tx *world.Tx) {
+		s := newFakeSession(geo.NewArea(0, 0, 0, 0, 0, 0))
+		tx.SetBlock(cube.Pos{0, 0, 0}, mcblock.Stone{}, nil)
+
+		result, err := service.Stack(tx, s, cube.Pos{0, 1, 0}, []string{"2"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Changed != 2 {
+			t.Fatalf("changed = %d, want 2", result.Changed)
+		}
+		if !parse.SameBlock(tx.Block(cube.Pos{0, 1, 0}), mcblock.Stone{}) {
+			t.Fatal("first upward stack copy missing")
+		}
+		if !parse.SameBlock(tx.Block(cube.Pos{0, 2, 0}), mcblock.Stone{}) {
+			t.Fatal("second upward stack copy missing")
 		}
 	})
 }
