@@ -14,7 +14,6 @@ import (
 
 func newBenchWorld(b *testing.B) *world.World {
 	b.Helper()
-	finaliseBlockRegistry()
 	w := world.New()
 	b.Cleanup(func() {
 		if err := w.Close(); err != nil {
@@ -26,7 +25,9 @@ func newBenchWorld(b *testing.B) *world.World {
 
 func execBenchTx(b *testing.B, w *world.World, f func(tx *world.Tx)) {
 	b.Helper()
-	<-w.Exec(f)
+	if err := w.Do(f).Wait(b.Context()); err != nil {
+		b.Fatalf("run world task: %v", err)
+	}
 }
 
 func fillBenchArea(tx *world.Tx, area geo.Area) {

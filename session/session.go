@@ -21,8 +21,6 @@ const (
 
 // Session contains per-player world-edit state.
 type Session struct {
-	p *player.Player
-
 	mu             sync.Mutex
 	historyMu      sync.Mutex
 	selection      Selection
@@ -85,12 +83,12 @@ func EnsureWithSettings(p *player.Player, historyLimit int, schematics edit.Sche
 		guardrails = limits[0]
 	}
 	if s, ok := Lookup(p); ok {
-		s.attach(p)
+		s.attach()
 		s.SetSchematicStore(schematics)
 		s.SetGuardrails(guardrails)
 		return s
 	}
-	s := &Session{p: p, schematics: schematics, guardrails: guardrails, history: history.NewHistory(historyLimit), historyLimit: historyLimit}
+	s := &Session{schematics: schematics, guardrails: guardrails, history: history.NewHistory(historyLimit), historyLimit: historyLimit}
 	sessions.Store(key(p), s)
 	return s
 }
@@ -135,7 +133,6 @@ func releaseID(id uuid.UUID, now time.Time) {
 		sessions.Delete(id)
 		return
 	}
-	s.p = nil
 	s.selection = Selection{}
 	s.historyMu.Lock()
 	s.history = history.NewHistory(s.historyLimit)
@@ -143,10 +140,9 @@ func releaseID(id uuid.UUID, now time.Time) {
 	s.disconnectedAt = now
 }
 
-func (s *Session) attach(p *player.Player) {
+func (s *Session) attach() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.p = p
 	s.disconnectedAt = time.Time{}
 }
 
