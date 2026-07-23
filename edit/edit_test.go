@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
-	_ "unsafe"
 
 	mcblock "github.com/df-mc/dragonfly/server/block"
 	"github.com/df-mc/dragonfly/server/block/cube"
@@ -18,19 +17,17 @@ import (
 	"github.com/df-mc/we/parse"
 )
 
-//go:linkname finaliseBlockRegistry github.com/df-mc/dragonfly/server/world.finaliseBlockRegistry
-func finaliseBlockRegistry()
-
 func withTx(t *testing.T, f func(tx *world.Tx)) {
 	t.Helper()
-	finaliseBlockRegistry()
 	w := world.New()
 	defer func() {
 		if err := w.Close(); err != nil {
 			t.Fatalf("close world: %v", err)
 		}
 	}()
-	<-w.Exec(f)
+	if err := w.Do(f).Wait(t.Context()); err != nil {
+		t.Fatalf("run world task: %v", err)
+	}
 }
 
 func TestFillUndoRedoBatch(t *testing.T) {

@@ -3,7 +3,7 @@ module github.com/df-mc/we
 go 1.26.0
 
 require (
-	github.com/df-mc/dragonfly v0.10.13-0.20260502213945-3e26ebd35b1b
+	github.com/df-mc/dragonfly v0.11.0
 	github.com/go-gl/mathgl v1.2.0
 	github.com/google/uuid v1.6.0
 )
@@ -16,12 +16,12 @@ require (
 	github.com/df-mc/go-xsapi v1.0.1 // indirect
 	github.com/df-mc/goleveldb v1.1.9 // indirect
 	github.com/df-mc/jsonc v1.0.5 // indirect
-	github.com/df-mc/worldupgrader v1.0.20 // indirect
+	github.com/df-mc/worldupgrader v1.0.21 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/golang/snappy v1.0.0 // indirect
 	github.com/klauspost/compress v1.18.5 // indirect
 	github.com/sandertv/go-raknet v1.15.1-0.20260112202637-beca0b10c217 // indirect
-	github.com/sandertv/gophertunnel v1.55.1 // indirect
+	github.com/sandertv/gophertunnel v1.57.0 // indirect
 	github.com/segmentio/fasthash v1.0.3 // indirect
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
 	golang.org/x/net v0.53.0 // indirect
